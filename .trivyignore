@@ -4,3 +4,22 @@
 # ConfigMap contains admin.bypass boolean for enabling admin group bypass feature
 # This is documented configuration, not sensitive data
 AVD-KSV-0109
+
+# --- CVEs in transitive deps whose vulnerable code we don't import/run, and which
+# --- cannot be cleanly bumped. We use ONLY parser/library packages:
+#   prometheus/prometheus -> model/labels, promql/parser (enforcer_promql.go, enforcer_logql.go, util.go)
+#   grafana/tempo         -> pkg/traceql                  (enforcer_traceql.go)
+# The flagged CVEs are in the prometheus server/API and tempo server/storage paths,
+# which are not imported or executed here. Bumping is also infeasible:
+#  - grafana/tempo is a v1-path module (no /v2), so Go can't accept the v2.10.3 fix as a
+#    version (it's a v1.x.x pseudo-version held by a replace directive).
+#  - prometheus is replace-pinned to v0.304.2 and coupled to tempo (both replaces added in
+#    the same commit); bumping it forces a graph re-resolve that fails on tempo's transitive
+#    test dep (otel-collector-contrib -> collector/pdata missing package), breaking the test
+#    build. Verified locally 2026-06-17.
+# Reassess if we import server/storage packages, or if grafana/tempo moves to a /v2 path.
+# Tracked in #6 — untangle the prometheus/tempo replace pins to remove these suppressions.
+CVE-2026-21728
+CVE-2026-28377
+CVE-2026-42151
+CVE-2026-42154
