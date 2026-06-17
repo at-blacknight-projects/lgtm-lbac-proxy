@@ -8,13 +8,13 @@ on:
         required: false
         default: helm/lgtm-lbac-proxy
       chart_repo_url:
-        description: Public URL of the artifact repository (https://binhnguyenduc.github.io/helm-charts/)
+        description: 'Override the chart repo URL. Defaults to https://<owner>.github.io/helm-charts/ derived from the artifact repo'
         required: false
-        default: https://binhnguyenduc.github.io/helm-charts/
+        default: ''
       artifact_repo:
-        description: GitHub owner/repo that stores packaged charts
+        description: 'Override artifact repo. Resolution: this input > vars.HELM_ARTIFACT_REPO > <owner>/helm-charts'
         required: false
-        default: binhnguyenduc/helm-charts
+        default: ''
   release:
     types: [published]
   push:
@@ -33,8 +33,8 @@ jobs:
       packages: read
     env:
       HELM_CHART_PATH: ${{ inputs.chart_path || 'helm/lgtm-lbac-proxy' }}
-      HELM_REPO_URL: ${{ inputs.chart_repo_url || 'https://binhnguyenduc.github.io/helm-charts/' }}
-      ARTIFACT_REPO: ${{ inputs.artifact_repo || 'binhnguyenduc/helm-charts' }}
+      HELM_REPO_URL: ${{ inputs.chart_repo_url }}
+      ARTIFACT_REPO: ${{ inputs.artifact_repo || vars.HELM_ARTIFACT_REPO || format('{0}/helm-charts', github.repository_owner) }}
     steps:
       - name: Checkout chart source
         uses: actions/checkout@v4
