@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"runtime"
+	"strings"
 
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/gorilla/mux"
@@ -213,6 +214,22 @@ func (a *App) WithProxies() *App {
 	return a
 }
 
+// singleJoiningSlash joins two URL path segments with exactly one separating slash.
+// Copied from the standard library's net/http/httputil (where it is unexported), so the
+// custom Director can prepend a configured upstream base path the same way
+// NewSingleHostReverseProxy does.
+func singleJoiningSlash(a, b string) string {
+	aslash := strings.HasSuffix(a, "/")
+	bslash := strings.HasPrefix(b, "/")
+	switch {
+	case aslash && bslash:
+		return a + b[1:]
+	case !aslash && !bslash:
+		return a + "/" + b
+	}
+	return a + b
+}
+
 // createProxy creates a reverse proxy with custom Director, ErrorHandler, and ModifyResponse.
 // Using direct ReverseProxy instantiation instead of NewSingleHostReverseProxy for better control.
 func (a *App) createProxy(targetURL string, actorHeader string, transport *http.Transport, upstream string) *httputil.ReverseProxy {
@@ -227,6 +244,19 @@ func (a *App) createProxy(targetURL string, actorHeader string, transport *http.
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
 			req.Host = target.Host
+
+			// Honor a base path on the configured upstream URL so it is prepended to the
+			// incoming request path. This is required for upstreams that mount the
+			// Prometheus-compatible API under a prefix — notably Mimir, which serves it
+			// at /prometheus/api/v1/* (vs Thanos at /api/v1/*) — and also enables
+			// sub-path-mounted Loki/Tempo. Backwards-compatible: when the upstream URL has
+			// no base path ("" or "/"), the incoming path is forwarded unchanged.
+			if target.Path != "" && target.Path != "/" {
+				req.URL.Path = singleJoiningSlash(target.Path, req.URL.Path)
+				if req.URL.RawPath != "" {
+					req.URL.RawPath = singleJoiningSlash(target.Path, req.URL.RawPath)
+				}
+			}
 
 			// Inject actor header if configured (base64 encoded username for fair usage tracking)
 			if actorHeader != "" {

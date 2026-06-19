@@ -181,7 +181,7 @@ autoscaling:
   behavior: {}
 
 image:
-  repository: ghcr.io/binhnguyenduc/lgtm-lbac-proxy
+  repository: ghcr.io/at-blacknight-projects/lgtm-lbac-proxy
   pullPolicy: IfNotPresent
   tag: ""
 
