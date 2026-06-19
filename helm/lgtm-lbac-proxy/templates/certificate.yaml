@@ -1,0 +1,29 @@
+{{- with .Values.auth }}{{- with .clientCert }}
+{{- if and .enabled .serverCertificate .serverCertificate.enabled }}
+# cert-manager Certificate for the proxy's mTLS server cert. secretName defaults to
+# clientCert.serverSecretName so the issued cert lands where the mTLS listener mounts it.
+# issuerRef is passed through verbatim to support non-standard issuers (e.g. ADCS).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "lgtm-lbac-proxy.name" $ }}-server
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "lgtm-lbac-proxy.labels" $ | nindent 4 }}
+spec:
+  secretName: {{ .serverSecretName | required "auth.clientCert.serverSecretName is required when serverCertificate is enabled" }}
+  {{- with .serverCertificate.duration }}
+  duration: {{ . }}
+  {{- end }}
+  dnsNames:
+    {{- range .serverCertificate.dnsNames }}
+    - {{ . | quote }}
+    {{- end }}
+  usages:
+    - server auth
+  issuerRef:
+    name: {{ .serverCertificate.issuerRef.name | required "auth.clientCert.serverCertificate.issuerRef.name is required" }}
+    kind: {{ .serverCertificate.issuerRef.kind | default "ClusterIssuer" }}
+    group: {{ .serverCertificate.issuerRef.group | default "cert-manager.io" }}
+{{- end }}
+{{- end }}{{- end }}
