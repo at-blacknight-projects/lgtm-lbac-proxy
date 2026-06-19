@@ -101,6 +101,14 @@ spec:
             - mountPath: /etc/secrets/ca/tempo/
               name: tempo-tls-secret
             {{- end }}
+            {{- with .Values.auth }}{{- with .clientCert }}{{- if and .enabled (eq (.source | default "mtls") "mtls") }}
+            - mountPath: /etc/secrets/server/
+              name: client-cert-server
+              readOnly: true
+            - mountPath: /etc/secrets/client-ca/
+              name: client-cert-ca
+              readOnly: true
+            {{- end }}{{- end }}{{- end }}
       volumes:
         - configMap:
             name: {{ include "lgtm-lbac-proxy.name" . }}-config
@@ -123,6 +131,21 @@ spec:
           secret:
             secretName: {{ .Values.tls.tempo.secretName }}
           {{- end }}
+          {{- with .Values.auth }}{{- with .clientCert }}{{- if and .enabled (eq (.source | default "mtls") "mtls") }}
+        - name: client-cert-server
+          secret:
+            secretName: {{ .serverSecretName | required "auth.clientCert.serverSecretName is required when clientCert is enabled with source mtls" }}
+        - name: client-cert-ca
+          {{- if .caSecretName }}
+          secret:
+            secretName: {{ .caSecretName }}
+          {{- else if .caConfigMapName }}
+          configMap:
+            name: {{ .caConfigMapName }}
+          {{- else }}
+          {{- fail "auth.clientCert: set caSecretName or caConfigMapName when clientCert is enabled with source mtls" }}
+          {{- end }}
+          {{- end }}{{- end }}{{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

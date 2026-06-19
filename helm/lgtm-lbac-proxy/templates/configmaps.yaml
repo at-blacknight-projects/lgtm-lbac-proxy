@@ -20,6 +20,31 @@ data:
         username: {{ .Values.auth.claims.username | default "preferred_username" }}
         email: {{ .Values.auth.claims.email | default "email" }}
         groups: {{ .Values.auth.claims.groups | default .Values.web.oauthGroupName | default "groups" }}
+      {{- with .Values.auth.clientCert }}
+      {{- if .enabled }}
+      # Certificate-based identity + configurable admission (mode B)
+      client_cert:
+        enabled: true
+        source: {{ .source | default "mtls" }}
+        cert_header: {{ .certHeader | default "X-Forwarded-Client-Cert" }}
+        identity_from: {{ .identityFrom | default "cn" }}
+        client_auth: {{ .clientAuth | default "require" }}
+        ca_path: {{ .caPath | default "/etc/secrets/client-ca/ca.crt" }}
+        server_cert: {{ .serverCert | default "/etc/secrets/server/tls.crt" }}
+        server_key: {{ .serverKey | default "/etc/secrets/server/tls.key" }}
+        admission:
+          logic: {{ .admission.logic | default "AND" }}
+          rules:
+            {{- range .admission.rules }}
+            - field: {{ .field }}
+              operator: {{ .operator | quote }}
+              values:
+                {{- range .values }}
+                - {{ . | quote }}
+                {{- end }}
+            {{- end }}
+      {{- end }}
+      {{- end }}
     {{- end }}
 
     web:

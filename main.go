@@ -2,10 +2,12 @@ package main
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"runtime"
 
 	"github.com/MicahParks/keyfunc/v3"
@@ -74,10 +76,73 @@ func (a *App) StartServer() {
 			Service:  "lgtm_lbac_proxy",
 		})
 
-		if err := http.ListenAndServe(fmt.Sprintf("%s:%d", a.Cfg.Web.Host, a.Cfg.Web.ProxyPort), std.Handler("/", mdlw, a.e)); err != nil {
+		addr := fmt.Sprintf("%s:%d", a.Cfg.Web.Host, a.Cfg.Web.ProxyPort)
+		handler := std.Handler("/", mdlw, a.e)
+
+		// Mode B: terminate mTLS at the proxy so the verified peer certificate is the
+		// root of admission. Falls back to plain HTTP when not configured (e.g. JWT-only,
+		// or client_cert Source "header" behind an mTLS-terminating ingress).
+		cc := a.Cfg.Auth.ClientCert
+		if cc.Enabled && cc.Source == "mtls" {
+			srv, err := a.buildMTLSServer(addr, handler)
+			if err != nil {
+				log.Fatal().Err(err).Msg("Error while building mTLS proxy server")
+			}
+			log.Info().Str("addr", addr).Str("client_auth", cc.ClientAuth).Msg("Serving proxy with mTLS client authentication")
+			if err := srv.ListenAndServeTLS("", ""); err != nil {
+				log.Fatal().Err(err).Msg("Error while serving proxy")
+			}
+			return
+		}
+
+		if err := http.ListenAndServe(addr, handler); err != nil {
 			log.Fatal().Err(err).Msg("Error while serving proxy")
 		}
 	}()
+}
+
+// buildMTLSServer constructs an HTTP server that terminates TLS and authenticates client
+// certificates against the configured client CA. The verified peer certificate is then
+// available to getIdentity for admission. ClientAuth "require" rejects clients without a
+// valid cert at handshake; "request" verifies a cert if given, allowing mixed JWT+mTLS.
+func (a *App) buildMTLSServer(addr string, handler http.Handler) (*http.Server, error) {
+	cc := a.Cfg.Auth.ClientCert
+
+	serverCert, err := tls.LoadX509KeyPair(cc.ServerCert, cc.ServerKey)
+	if err != nil {
+		return nil, fmt.Errorf("loading proxy server keypair: %w", err)
+	}
+
+	caPEM, err := os.ReadFile(cc.CAPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading client CA bundle %q: %w", cc.CAPath, err)
+	}
+	clientCAs := x509.NewCertPool()
+	if !clientCAs.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("no certificates found in client CA bundle %q", cc.CAPath)
+	}
+
+	return &http.Server{
+		Addr:    addr,
+		Handler: handler,
+		TLSConfig: &tls.Config{
+			MinVersion:   tls.VersionTLS12,
+			Certificates: []tls.Certificate{serverCert},
+			ClientCAs:    clientCAs,
+			ClientAuth:   clientAuthType(cc.ClientAuth),
+		},
+	}, nil
+}
+
+// clientAuthType maps the configured client_auth string to a tls.ClientAuthType.
+// Defaults to RequireAndVerifyClientCert for any unrecognised value.
+func clientAuthType(s string) tls.ClientAuthType {
+	switch s {
+	case "request", "verify_if_given":
+		return tls.VerifyClientCertIfGiven
+	default:
+		return tls.RequireAndVerifyClientCert
+	}
 }
 
 // WithProxies initializes reverse proxy instances for each configured upstream.

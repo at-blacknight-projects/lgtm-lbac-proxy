@@ -225,7 +225,7 @@ func handlerWithProxy(matchWord string, enforcer EnforceQL, proxy *httputil.Reve
 		defer cancel()
 		r = r.WithContext(ctx)
 
-		oauthToken, err := getToken(r, a)
+		oauthToken, err := getIdentity(r, a)
 		if err != nil {
 			logAndWriteError(w, http.StatusForbidden, err, "")
 			return
@@ -270,7 +270,7 @@ func handler(matchWord string, enforcer EnforceQL, dsURL string, tls bool, heade
 		log.Fatal().Err(err).Str("url", dsURL).Msg("Error parsing URL")
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		oauthToken, err := getToken(r, a)
+		oauthToken, err := getIdentity(r, a)
 		if err != nil {
 			logAndWriteError(w, http.StatusForbidden, err, "")
 		}
