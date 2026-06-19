@@ -28,13 +28,55 @@ type ClaimsConfig struct {
 	Groups   string `mapstructure:"groups"`   // Claim name for groups (e.g., "groups", "roles", "https://example.com/groups")
 }
 
+// TrustedClientHeaderConfig configures identity derived from a trusted request
+// header instead of a JWT. It is intended for machine clients that cannot present
+// an OIDC token (e.g. the Ceph dashboard via an mTLS sidecar): a fronting ingress
+// terminates mTLS, verifies the client certificate, and forwards the verified
+// Common Name in CNHeader. The proxy then uses that CN as the label-policy identity.
+//
+// SECURITY: the CN header is trusted implicitly when Enabled. The fronting ingress
+// MUST (1) enforce mTLS client authentication, (2) overwrite/strip any
+// client-supplied value of CNHeader and set it from the verified certificate, and
+// (3) be the only network path to the proxy. Enabling this without those controls
+// lets any caller impersonate any identity by setting the header.
+type TrustedClientHeaderConfig struct {
+	Enabled  bool   `mapstructure:"enabled"`   // Opt-in; default false (JWT-only)
+	CNHeader string `mapstructure:"cn_header"` // Header carrying the verified client CN (default "X-Client-CN")
+}
+
+// ClientCertConfig configures certificate-based identity and admission (mode B).
+//
+// When Enabled, the verified client certificate is the root of admission: the proxy
+// extracts claims from it, evaluates the configurable Admission policy, and derives the
+// label-policy identity from IdentityFrom. The certificate is obtained either from the
+// TLS layer when the proxy terminates mTLS (Source "mtls") or from a forwarded PEM header
+// set by an mTLS-terminating ingress (Source "header").
+type ClientCertConfig struct {
+	Enabled      bool                `mapstructure:"enabled"`       // Opt-in; default false
+	Source       string              `mapstructure:"source"`        // "mtls" (proxy-terminated) | "header" (forwarded PEM); default "mtls"
+	CertHeader   string              `mapstructure:"cert_header"`   // Header carrying the URL-escaped/PEM client cert (Source "header"); default "X-Forwarded-Client-Cert"
+	IdentityFrom string              `mapstructure:"identity_from"` // Cert field used as label-policy identity; default "cn"
+	CAPath       string              `mapstructure:"ca_path"`       // Client CA bundle to verify against (mTLS listener / header re-verification)
+	ServerCert   string              `mapstructure:"server_cert"`   // Proxy server certificate (Source "mtls")
+	ServerKey    string              `mapstructure:"server_key"`    // Proxy server key (Source "mtls")
+	ClientAuth   string              `mapstructure:"client_auth"`   // mTLS listener policy: "require" (default) or "request" (verify-if-given; enables mixed JWT+mTLS on one port)
+	// MTLSPort, when set (Source "mtls"), runs the mTLS listener on this dedicated port
+	// while the plain-HTTP proxy keeps serving on web.proxy_port — so in-cluster HTTP/JWT
+	// clients are unaffected and only the mTLS port need be exposed externally. When unset
+	// (0), the mTLS listener replaces the plain proxy listener on web.proxy_port.
+	MTLSPort  int                 `mapstructure:"mtls_port"`
+	Admission CertAdmissionPolicy `mapstructure:"admission"` // Configurable {field,operator,values} rules
+}
+
 // AuthConfig contains all authentication-related configuration.
 // This separates auth concerns from web server configuration.
 type AuthConfig struct {
-	JwksCertURL string       `mapstructure:"jwks_cert_url"` // JWKS endpoint URL for token validation
-	AuthHeader  string       `mapstructure:"auth_header"`   // HTTP header containing the JWT token
-	AuthScheme  string       `mapstructure:"auth_scheme"`   // Authentication scheme/prefix (e.g., "Bearer")
-	Claims      ClaimsConfig `mapstructure:"claims"`        // JWT claim field names
+	JwksCertURL         string                    `mapstructure:"jwks_cert_url"`         // JWKS endpoint URL for token validation
+	AuthHeader          string                    `mapstructure:"auth_header"`           // HTTP header containing the JWT token
+	AuthScheme          string                    `mapstructure:"auth_scheme"`           // Authentication scheme/prefix (e.g., "Bearer")
+	Claims              ClaimsConfig              `mapstructure:"claims"`                // JWT claim field names
+	TrustedClientHeader TrustedClientHeaderConfig `mapstructure:"trusted_client_header"` // Identity from a trusted CN header (lightweight)
+	ClientCert          ClientCertConfig          `mapstructure:"client_cert"`           // Certificate-based identity + configurable admission (mode B)
 }
 
 type WebConfig struct {
@@ -350,6 +392,26 @@ func (a *App) migrateAuthConfig() {
 	}
 	if a.Cfg.Auth.Claims.Groups == "" {
 		a.Cfg.Auth.Claims.Groups = "groups"
+	}
+	if a.Cfg.Auth.TrustedClientHeader.Enabled && a.Cfg.Auth.TrustedClientHeader.CNHeader == "" {
+		a.Cfg.Auth.TrustedClientHeader.CNHeader = "X-Client-CN"
+	}
+	if a.Cfg.Auth.ClientCert.Enabled {
+		if a.Cfg.Auth.ClientCert.Source == "" {
+			a.Cfg.Auth.ClientCert.Source = "mtls"
+		}
+		if a.Cfg.Auth.ClientCert.CertHeader == "" {
+			a.Cfg.Auth.ClientCert.CertHeader = "X-Forwarded-Client-Cert"
+		}
+		if a.Cfg.Auth.ClientCert.IdentityFrom == "" {
+			a.Cfg.Auth.ClientCert.IdentityFrom = CertFieldCN
+		}
+		if a.Cfg.Auth.ClientCert.ClientAuth == "" {
+			a.Cfg.Auth.ClientCert.ClientAuth = "require"
+		}
+		if err := a.Cfg.Auth.ClientCert.Admission.Validate(); err != nil {
+			log.Fatal().Err(err).Msg("Invalid client_cert.admission policy")
+		}
 	}
 	a.Cfg.Auth.AuthScheme = strings.TrimSpace(a.Cfg.Auth.AuthScheme)
 

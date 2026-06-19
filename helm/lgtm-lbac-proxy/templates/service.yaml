@@ -15,6 +15,12 @@ spec:
       targetPort: metrics
       protocol: TCP
       name: {{ include "lgtm-lbac-proxy.name" . }}-metrics
+    {{- with .Values.auth }}{{- with .clientCert }}{{- if and .enabled (eq (.source | default "mtls") "mtls") .mtlsPort }}
+    - port: {{ .mtlsPort }}
+      targetPort: mtls
+      protocol: TCP
+      name: {{ include "lgtm-lbac-proxy.name" $ }}-mtls
+    {{- end }}{{- end }}{{- end }}
   selector:
     {{- include "lgtm-lbac-proxy.selectorLabels" . | nindent 4 }}
   type: {{ .Values.service.type }}

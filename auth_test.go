@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -39,6 +41,117 @@ func TestGetToken_InvalidAuthorizationFormat(t *testing.T) {
 
 	assert.Error(t, err)
 	assert.Equal(t, OAuthToken{}, token)
+}
+
+func TestGetIdentity_TrustedHeader_Enabled(t *testing.T) {
+	app, _ := setupTestMain()
+	app.Cfg.Auth.TrustedClientHeader.Enabled = true
+	app.Cfg.Auth.TrustedClientHeader.CNHeader = "X-Client-CN"
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Client-CN", "svc-reader")
+
+	// No Authorization header present: identity must come from the trusted CN header.
+	token, err := getIdentity(req, &app)
+
+	assert.NoError(t, err)
+	assert.Equal(t, "svc-reader", token.PreferredUsername)
+}
+
+func TestGetIdentity_TrustedHeader_Disabled_IgnoresHeader(t *testing.T) {
+	app, _ := setupTestMain()
+	app.Cfg.Auth.TrustedClientHeader.Enabled = false
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Client-CN", "svc-reader")
+
+	// Disabled: header must be ignored and JWT validation must run (and fail here).
+	token, err := getIdentity(req, &app)
+
+	assert.Error(t, err)
+	assert.Equal(t, OAuthToken{}, token)
+}
+
+func TestGetIdentity_TrustedHeader_Enabled_FallsBackToJWT(t *testing.T) {
+	app, tokens := setupTestMain()
+	app.Cfg.Auth.TrustedClientHeader.Enabled = true
+	app.Cfg.Auth.TrustedClientHeader.CNHeader = "X-Client-CN"
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	// No CN header: a human caller presenting a JWT must still authenticate.
+	req.Header.Set("Authorization", "Bearer "+tokens["userTenant"])
+
+	token, err := getIdentity(req, &app)
+
+	assert.NoError(t, err)
+	assert.Equal(t, "user", token.PreferredUsername)
+}
+
+func TestGetIdentity_TrustedHeader_Enabled_EmptyHeaderFallsBack(t *testing.T) {
+	app, _ := setupTestMain()
+	app.Cfg.Auth.TrustedClientHeader.Enabled = true
+	app.Cfg.Auth.TrustedClientHeader.CNHeader = "X-Client-CN"
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Client-CN", "   ") // whitespace-only must not be treated as an identity
+
+	token, err := getIdentity(req, &app)
+
+	assert.Error(t, err)
+	assert.Equal(t, OAuthToken{}, token)
+}
+
+func TestGetIdentity_ClientCert_AdmittedAndScoped(t *testing.T) {
+	app, _ := setupTestMain()
+	app.Cfg.Auth.ClientCert.Enabled = true
+	app.Cfg.Auth.ClientCert.Source = "mtls"
+	app.Cfg.Auth.ClientCert.IdentityFrom = CertFieldCN
+	app.Cfg.Auth.ClientCert.Admission = CertAdmissionPolicy{
+		Logic: LogicAND,
+		Rules: []CertMatchRule{
+			{Field: CertFieldTemplateOID, Operator: OperatorEquals, Values: []string{testTemplateOID}},
+			{Field: CertFieldIssuerCN, Operator: OperatorEquals, Values: []string{"Example Issuing CA"}},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{defaultCephCert(t)}}
+
+	token, err := getIdentity(req, &app)
+
+	assert.NoError(t, err)
+	assert.Equal(t, "svc-reader", token.PreferredUsername)
+}
+
+func TestGetIdentity_ClientCert_AdmissionDenied(t *testing.T) {
+	app, _ := setupTestMain()
+	app.Cfg.Auth.ClientCert.Enabled = true
+	app.Cfg.Auth.ClientCert.Source = "mtls"
+	app.Cfg.Auth.ClientCert.Admission = CertAdmissionPolicy{
+		Logic: LogicAND,
+		Rules: []CertMatchRule{
+			{Field: CertFieldTemplateOID, Operator: OperatorEquals, Values: []string{"1.2.3.4.5"}}, // wrong template
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{defaultCephCert(t)}}
+
+	token, err := getIdentity(req, &app)
+
+	assert.Error(t, err)
+	assert.Equal(t, OAuthToken{}, token)
+}
+
+func TestGetIdentity_ClientCert_NoCertFallsBackToJWT(t *testing.T) {
+	app, tokens := setupTestMain()
+	app.Cfg.Auth.ClientCert.Enabled = true
+	app.Cfg.Auth.ClientCert.Source = "mtls"
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	// No TLS peer cert; a JWT caller must still authenticate.
+	req.Header.Set("Authorization", "Bearer "+tokens["userTenant"])
+
+	token, err := getIdentity(req, &app)
+
+	assert.NoError(t, err)
+	assert.Equal(t, "user", token.PreferredUsername)
 }
 
 func TestParseJwtToken_ValidToken(t *testing.T) {

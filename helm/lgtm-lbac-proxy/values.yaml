@@ -69,6 +69,45 @@ auth:
   # Auth0: username=nickname, email=email, groups=https://domain.com/groups
   # Google: username=email, email=email, groups=hd
 
+  # Certificate-based identity + configurable admission (mode B).
+  # When enabled with source "mtls", the proxy terminates mTLS and the verified
+  # client certificate is the root of admission; identity is taken from a cert
+  # field (default CN) and drives the label policy. Disabled by default (JWT-only).
+  clientCert:
+    enabled: false
+    source: mtls                       # "mtls" (proxy terminates) | "header" (forwarded PEM from an mTLS ingress)
+    certHeader: X-Forwarded-Client-Cert # header carrying the cert when source is "header"
+    identityFrom: cn                   # cert field used as the label-policy identity
+    clientAuth: require                # mTLS listener: "require" | "request" (verify-if-given; allows mixed JWT+mTLS)
+    # mTLS listener port. Set it (e.g. 8443) to run mTLS on a DEDICATED port while plain
+    # HTTP keeps serving on service.webPort — so in-cluster HTTP/JWT clients are unaffected
+    # and only this port need be exposed. Leave empty to run mTLS on service.webPort instead.
+    mtlsPort: ""
+    # Secret (tls.crt/tls.key) with the proxy's own server cert, mounted at /etc/secrets/server/
+    serverSecretName: ""
+    serverCert: /etc/secrets/server/tls.crt
+    serverKey: /etc/secrets/server/tls.key
+    # Client CA bundle used to verify client certs, mounted at /etc/secrets/client-ca/.
+    # A secret is the default; a configMap (e.g. a trust-manager bundle) is also
+    # supported. The secret takes precedence if both are set.
+    caSecretName: ""                 # secret holding the CA bundle (default source)
+    caConfigMapName: ""              # alternative: configMap holding the CA bundle (e.g. trust-manager sca-root-ca)
+    caPath: /etc/secrets/client-ca/ca.crt  # must match a key in the secret/configMap above
+    # Configurable admission: operators choose which cert attributes they trust.
+    # Fields: cn, issuer_cn, template_oid, template_name, eku, san_dns, san_uri,
+    #         san_email, o, ou, serial, subject_dn, issuer_dn, ext:<oid>
+    # Operators: "=", "!=", "=~", "!~"   Logic: AND (default) | OR
+    admission:
+      logic: AND
+      rules: []
+      # Example (pin an AD CS template OID + require the clientAuth EKU):
+      # - field: template_oid
+      #   operator: "="
+      #   values: ["1.3.6.1.4.1.311.21.8.<your-template-oid>"]
+      # - field: eku
+      #   operator: "="
+      #   values: ["clientAuth"]
+
 # Legacy web configuration (deprecated - use auth section above)
 # These fields are maintained for backward compatibility but will be removed in a future release
 web:

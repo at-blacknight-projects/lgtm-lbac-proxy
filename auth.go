@@ -37,6 +37,52 @@ func (t OAuthToken) ToIdentity() UserIdentity {
 	}
 }
 
+// getIdentity resolves the caller identity for label-policy lookup.
+//
+// When trusted-client-header mode is enabled (auth.trusted_client_header.enabled)
+// and the configured header is present, the verified client CN — forwarded by the
+// mTLS-terminating ingress — is used as the identity, bypassing JWT validation.
+// This supports machine clients that cannot present an OIDC token (e.g. the Ceph
+// dashboard via an mTLS sidecar). The CN is used as the username, so a labels.yaml
+// entry keyed by the CN drives the label policy. Otherwise it falls back to JWT
+// validation via getToken.
+//
+// SECURITY: the CN header is trusted implicitly. See TrustedClientHeaderConfig —
+// the fronting ingress must enforce mTLS, overwrite any client-supplied header
+// value from the verified certificate, and be the only path to the proxy.
+func getIdentity(r *http.Request, a *App) (OAuthToken, error) {
+	// Mode B: certificate-based identity + configurable admission (preferred when enabled).
+	if a.Cfg.Auth.ClientCert.Enabled {
+		cert, err := clientCertFromRequest(r, &a.Cfg.Auth.ClientCert)
+		if err != nil {
+			return OAuthToken{}, err
+		}
+		if cert != nil {
+			claims := extractCertClaims(cert)
+			if err := Admit(claims, a.Cfg.Auth.ClientCert.Admission); err != nil {
+				log.Warn().Err(err).Str("cn", claims.CN).Str("template_oid", claims.TemplateOID).Msg("Client cert admission denied")
+				return OAuthToken{}, err
+			}
+			id := identityFromClaims(claims, a.Cfg.Auth.ClientCert.IdentityFrom)
+			if id == "" {
+				return OAuthToken{}, fmt.Errorf("client cert admitted but identity field %q is empty", a.Cfg.Auth.ClientCert.IdentityFrom)
+			}
+			log.Debug().Str("identity", id).Str("field", a.Cfg.Auth.ClientCert.IdentityFrom).Msg("Identity from client certificate")
+			return OAuthToken{PreferredUsername: id}, nil
+		}
+		// No client cert presented — fall through to other auth methods (mixed deployments).
+	}
+
+	if a.Cfg.Auth.TrustedClientHeader.Enabled {
+		cn := strings.TrimSpace(r.Header.Get(a.Cfg.Auth.TrustedClientHeader.CNHeader))
+		if cn != "" {
+			log.Debug().Str("cn", cn).Str("header", a.Cfg.Auth.TrustedClientHeader.CNHeader).Msg("Identity from trusted client header")
+			return OAuthToken{PreferredUsername: cn}, nil
+		}
+	}
+	return getToken(r, a)
+}
+
 // getToken retrieves the OAuth token from the incoming HTTP request.
 // It extracts, parses, and validates the token from the configured authentication header.
 func getToken(r *http.Request, a *App) (OAuthToken, error) {
