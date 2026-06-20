@@ -1,0 +1,9 @@
+{{- /*
+Render arbitrary extra manifests supplied via .Values.extraManifests. Each list item is a
+full Kubernetes object; Helm templating ({{ }}) inside an item is evaluated via tpl with the
+root context, so values/release metadata can be referenced.
+*/}}
+{{- range .Values.extraManifests }}
+---
+{{ tpl (toYaml .) $ }}
+{{- end }}

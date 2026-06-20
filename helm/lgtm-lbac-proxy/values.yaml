@@ -189,3 +189,14 @@ resources:
   limits:
     cpu: 500m        # Increased from 200m to handle traffic spikes
     memory: 1Gi      # Increased from 128Mi for label validation overhead and concurrent requests
+
+# Extra raw Kubernetes manifests rendered alongside the release. Each list item is a full
+# object; Helm templating ({{ }}) inside an item is supported (evaluated via tpl). Useful for
+# cluster-specific extras (a Certificate, ExternalSecret, NetworkPolicy, etc.) without forking.
+extraManifests: []
+#  - apiVersion: v1
+#    kind: ConfigMap
+#    metadata:
+#      name: '{{ include "lgtm-lbac-proxy.name" . }}-extra'
+#    data:
+#      hello: world
