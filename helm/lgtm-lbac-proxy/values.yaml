@@ -63,6 +63,11 @@ auth:
     username: "preferred_username"  # JWT claim for username (default: preferred_username)
     email: "email"                   # JWT claim for email (default: email)
     groups: "groups"                 # JWT claim for groups (default: groups)
+  # Token validation hardening (both optional; empty = signature+expiry only).
+  # issuer: exact `iss` the token must carry. audiences: accepted `aud` values (any-match)
+  # — set these so a token minted for a different resource can't be replayed here.
+  issuer: ""        # e.g. https://sts.windows.net/<tenant-id>/
+  audiences: []     # e.g. ["api://<app-id>", "<app-id-guid>"]
   # Common OAuth Provider Examples:
   # Keycloak: username=preferred_username, email=email, groups=groups
   # Azure AD: username=unique_name, email=upn, groups=roles

@@ -8,6 +8,57 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestAudienceMatches(t *testing.T) {
+	allowed := []string{"api://app-x", "app-x-guid"}
+	assert.True(t, audienceMatches("api://app-x", allowed))             // single string
+	assert.True(t, audienceMatches("app-x-guid", allowed))              // bare GUID form
+	assert.True(t, audienceMatches([]interface{}{"other", "app-x-guid"}, allowed)) // array
+	assert.False(t, audienceMatches("api://other", allowed))            // no match
+	assert.False(t, audienceMatches(nil, allowed))                      // missing aud
+	assert.False(t, audienceMatches([]interface{}{1, 2}, allowed))      // non-string entries
+}
+
+func TestParseJwtToken_AudienceIssuer(t *testing.T) {
+	const iss = "https://issuer.example/"
+	const aud = "api://app-x"
+
+	app, _, pk := setupTestMainWithPrivateKey()
+
+	sign := func(claims map[string]interface{}) string {
+		tok, err := genJWKSWithCustomClaims(claims, pk)
+		assert.NoError(t, err)
+		return tok
+	}
+
+	t.Run("audience and issuer accepted", func(t *testing.T) {
+		app.Cfg.Auth.Issuer = iss
+		app.Cfg.Auth.Audiences = []string{aud}
+		_, _, err := parseJwtToken(sign(map[string]interface{}{"iss": iss, "aud": aud}), &app)
+		assert.NoError(t, err)
+	})
+
+	t.Run("wrong audience rejected", func(t *testing.T) {
+		app.Cfg.Auth.Issuer = ""
+		app.Cfg.Auth.Audiences = []string{aud}
+		_, _, err := parseJwtToken(sign(map[string]interface{}{"aud": "api://someone-else"}), &app)
+		assert.ErrorContains(t, err, "invalid audience")
+	})
+
+	t.Run("wrong issuer rejected", func(t *testing.T) {
+		app.Cfg.Auth.Issuer = iss
+		app.Cfg.Auth.Audiences = nil
+		_, _, err := parseJwtToken(sign(map[string]interface{}{"iss": "https://evil/", "aud": aud}), &app)
+		assert.ErrorContains(t, err, "invalid issuer")
+	})
+
+	t.Run("unset checks skip (backward compatible)", func(t *testing.T) {
+		app.Cfg.Auth.Issuer = ""
+		app.Cfg.Auth.Audiences = nil
+		_, _, err := parseJwtToken(sign(map[string]interface{}{"aud": "anything", "iss": "anywhere"}), &app)
+		assert.NoError(t, err)
+	})
+}
+
 func TestGetToken_ValidToken(t *testing.T) {
 	app, tokens := setupTestMain()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)

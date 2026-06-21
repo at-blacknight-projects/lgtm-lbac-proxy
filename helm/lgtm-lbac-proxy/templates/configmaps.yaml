@@ -20,6 +20,15 @@ data:
         username: {{ .Values.auth.claims.username | default "preferred_username" }}
         email: {{ .Values.auth.claims.email | default "email" }}
         groups: {{ .Values.auth.claims.groups | default .Values.web.oauthGroupName | default "groups" }}
+      {{- with .Values.auth.issuer }}
+      issuer: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.auth.audiences }}
+      audiences:
+        {{- range . }}
+        - {{ . | quote }}
+        {{- end }}
+      {{- end }}
     {{- end }}
 
     web:

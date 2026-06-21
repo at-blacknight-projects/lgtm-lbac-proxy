@@ -127,6 +127,26 @@ func parseJwtToken(tokenString string, a *App) (OAuthToken, *jwt.Token, error) {
 		log.Trace().Msg("Token is invalid")
 	}
 
+	// Issuer check (exact match). Defends against tokens signed by the trusted keys but
+	// issued by an unexpected issuer. Skipped when unset.
+	if want := a.Cfg.Auth.Issuer; want != "" {
+		got, _ := claimsMap["iss"].(string)
+		if got != want {
+			log.Warn().Str("iss", got).Msg("Token issuer not accepted")
+			return oAuthToken, token, fmt.Errorf("invalid issuer")
+		}
+	}
+
+	// Audience check (any-match). Defends against tokens minted for a different resource
+	// (e.g. an ARM token) that would otherwise pass on signature+expiry alone. Skipped when
+	// unset. `aud` may be a string or an array per the JWT spec.
+	if len(a.Cfg.Auth.Audiences) > 0 {
+		if !audienceMatches(claimsMap["aud"], a.Cfg.Auth.Audiences) {
+			log.Warn().Interface("aud", claimsMap["aud"]).Msg("Token audience not accepted")
+			return oAuthToken, token, fmt.Errorf("invalid audience")
+		}
+	}
+
 	if v, ok := claimsMap[a.Cfg.Web.OAuthUsernameClaim].(string); ok {
 		oAuthToken.PreferredUsername = v
 		log.Trace().Str("claim", a.Cfg.Web.OAuthUsernameClaim).Str("value", v).Msg("Username claim")
@@ -150,6 +170,32 @@ func parseJwtToken(tokenString string, a *App) (OAuthToken, *jwt.Token, error) {
 	}
 
 	return oAuthToken, token, err
+}
+
+// audienceMatches reports whether the token's `aud` claim (a string or array of strings,
+// per RFC 7519) contains any of the allowed audiences.
+func audienceMatches(claim interface{}, allowed []string) bool {
+	var auds []string
+	switch v := claim.(type) {
+	case string:
+		auds = []string{v}
+	case []interface{}:
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				auds = append(auds, s)
+			}
+		}
+	case []string:
+		auds = v
+	}
+	for _, got := range auds {
+		for _, want := range allowed {
+			if got == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // validateLabelPolicy retrieves and validates the label policy for the user.
