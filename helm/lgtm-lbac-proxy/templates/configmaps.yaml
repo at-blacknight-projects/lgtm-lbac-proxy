@@ -48,6 +48,15 @@ data:
             {{- end }}
       {{- end }}
       {{- end }}
+      {{- with .Values.auth.issuer }}
+      issuer: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.auth.audiences }}
+      audiences:
+        {{- range . }}
+        - {{ . | quote }}
+        {{- end }}
+      {{- end }}
     {{- end }}
 
     web:

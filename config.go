@@ -77,6 +77,12 @@ type AuthConfig struct {
 	Claims              ClaimsConfig              `mapstructure:"claims"`                // JWT claim field names
 	TrustedClientHeader TrustedClientHeaderConfig `mapstructure:"trusted_client_header"` // Identity from a trusted CN header (lightweight)
 	ClientCert          ClientCertConfig          `mapstructure:"client_cert"`           // Certificate-based identity + configurable admission (mode B)
+	// Audiences is the set of accepted `aud` values; a token passes if its aud matches ANY.
+	// Empty disables the check (signature+expiry only). Without it, any token signed by the
+	// trusted issuer is accepted regardless of which resource it was minted for.
+	Audiences []string `mapstructure:"audiences"`
+	// Issuer, when set, is the exact `iss` the token must carry. Empty disables the check.
+	Issuer string `mapstructure:"issuer"`
 }
 
 type WebConfig struct {
