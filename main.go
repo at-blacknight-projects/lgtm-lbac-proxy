@@ -31,6 +31,7 @@ type App struct {
 	lokiProxy           *httputil.ReverseProxy
 	thanosProxy         *httputil.ReverseProxy
 	tempoProxy          *httputil.ReverseProxy
+	alertmanagerProxy   *httputil.ReverseProxy
 	i                   *mux.Router
 	e                   *mux.Router
 	healthy             bool
@@ -209,6 +210,18 @@ func (a *App) WithProxies() *App {
 			Dur("request_timeout", proxyCfg.RequestTimeout).
 			Int("max_idle_conns_per_host", proxyCfg.MaxIdleConnsPerHost).
 			Msg("Tempo proxy initialized")
+	}
+
+	// Initialize Alertmanager proxy if URL is configured
+	if a.Cfg.Alertmanager.URL != "" {
+		proxyCfg := a.Cfg.GetProxyConfig(a.Cfg.Alertmanager.Proxy)
+		transport := a.createTransport(proxyCfg, a.TlS)
+		a.alertmanagerProxy = a.createProxy(a.Cfg.Alertmanager.URL, a.Cfg.Alertmanager.ActorHeader, transport, "alertmanager")
+		log.Info().
+			Str("url", a.Cfg.Alertmanager.URL).
+			Dur("request_timeout", proxyCfg.RequestTimeout).
+			Int("max_idle_conns_per_host", proxyCfg.MaxIdleConnsPerHost).
+			Msg("Alertmanager proxy initialized")
 	}
 
 	return a

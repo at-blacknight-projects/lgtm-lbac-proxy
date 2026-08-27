@@ -160,18 +160,53 @@ type TempoConfig struct {
 	Proxy        *ProxyConfig      `mapstructure:"proxy"` // Per-upstream proxy configuration override
 }
 
+// AlertmanagerConfig is the Alertmanager upstream, used by the routes registered in
+// WithAlertmanager.
+//
+// Mimir and Cortex serve the Alertmanager API under a base path (PathPrefix, default
+// /alertmanager). A standalone Alertmanager serves it at the root; set path_prefix to ""
+// for that.
+type AlertmanagerConfig struct {
+	URL          string            `mapstructure:"url"`
+	PathPrefix   string            `mapstructure:"path_prefix"`
+	UseMutualTLS bool              `mapstructure:"use_mutual_tls"`
+	Cert         string            `mapstructure:"cert"`
+	Key          string            `mapstructure:"key"`
+	Headers      map[string]string `mapstructure:"headers"`
+	ActorHeader  string            `mapstructure:"actor_header"`
+	Proxy        *ProxyConfig      `mapstructure:"proxy"` // Per-upstream proxy configuration override
+}
+
+// AlertingConfig gates the ruler and Alertmanager routes.
+//
+// Those endpoints return whole rule groups and alert instances rather than a query, so
+// there is no expression for a label enforcer to rewrite and no per-tenant scoping to
+// apply. Access is granted by group membership instead: ViewerGroups may read,
+// AdminGroups may additionally create and expire silences and write the Alertmanager
+// configuration. A caller in neither group reads an empty result set.
+//
+// Distinct from AlertConfig above, which configures a second JWKS source for
+// alert-webhook tokens and is unrelated.
+type AlertingConfig struct {
+	Enabled      bool     `mapstructure:"enabled"`
+	ViewerGroups []string `mapstructure:"viewer_groups"`
+	AdminGroups  []string `mapstructure:"admin_groups"`
+}
+
 type Config struct {
-	Log        LogConfig        `mapstructure:"log"`
-	Auth       AuthConfig       `mapstructure:"auth"` // Authentication configuration (preferred)
-	Web        WebConfig        `mapstructure:"web"`
-	Admin      AdminConfig      `mapstructure:"admin"`
-	Alert      AlertConfig      `mapstructure:"alert"`
-	Dev        DevConfig        `mapstructure:"dev"`
-	Proxy      ProxyConfig      `mapstructure:"proxy"` // Global proxy configuration defaults
-	Thanos     ThanosConfig     `mapstructure:"thanos"`
-	Loki       LokiConfig       `mapstructure:"loki"`
-	Tempo      TempoConfig      `mapstructure:"tempo"`
-	LabelStore LabelStoreConfig `mapstructure:"labelstore"`
+	Log          LogConfig          `mapstructure:"log"`
+	Auth         AuthConfig         `mapstructure:"auth"` // Authentication configuration (preferred)
+	Web          WebConfig          `mapstructure:"web"`
+	Admin        AdminConfig        `mapstructure:"admin"`
+	Alert        AlertConfig        `mapstructure:"alert"`
+	Alerting     AlertingConfig     `mapstructure:"alerting"` // Ruler + Alertmanager route access
+	Dev          DevConfig          `mapstructure:"dev"`
+	Proxy        ProxyConfig        `mapstructure:"proxy"` // Global proxy configuration defaults
+	Thanos       ThanosConfig       `mapstructure:"thanos"`
+	Loki         LokiConfig         `mapstructure:"loki"`
+	Tempo        TempoConfig        `mapstructure:"tempo"`
+	Alertmanager AlertmanagerConfig `mapstructure:"alertmanager"`
+	LabelStore   LabelStoreConfig   `mapstructure:"labelstore"`
 }
 
 // LabelStoreConfig contains configuration needed by label stores during initialization.
@@ -196,6 +231,10 @@ func (a *App) WithConfig() *App {
 
 	// Set defaults for label store configuration
 	v.SetDefault("labelstore::config_paths", []string{"/etc/config/labels/", "./configs"})
+
+	// Mimir and Cortex serve the Alertmanager API under /alertmanager. Set explicitly to
+	// "" for a standalone Alertmanager, which serves it at the root.
+	v.SetDefault("alertmanager::path_prefix", "/alertmanager")
 
 	err := v.MergeInConfig()
 	if err != nil {

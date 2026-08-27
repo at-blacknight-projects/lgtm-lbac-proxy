@@ -106,6 +106,10 @@ spec:
             - mountPath: /etc/secrets/ca/tempo/
               name: tempo-tls-secret
             {{- end }}
+            {{- if eq .Values.tls.alertmanager.enabled true }}
+            - mountPath: /etc/secrets/ca/alertmanager/
+              name: alertmanager-tls-secret
+            {{- end }}
             {{- with .Values.auth }}{{- with .clientCert }}{{- if and .enabled (eq (.source | default "mtls") "mtls") }}
             - mountPath: /etc/secrets/server/
               name: client-cert-server
@@ -135,6 +139,11 @@ spec:
         - name: tempo-tls-secret
           secret:
             secretName: {{ .Values.tls.tempo.secretName }}
+          {{- end }}
+          {{- if eq .Values.tls.alertmanager.enabled true }}
+        - name: alertmanager-tls-secret
+          secret:
+            secretName: {{ .Values.tls.alertmanager.secretName }}
           {{- end }}
           {{- with .Values.auth }}{{- with .clientCert }}{{- if and .enabled (eq (.source | default "mtls") "mtls") }}
         - name: client-cert-server

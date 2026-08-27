@@ -276,3 +276,49 @@ func validateLabelPolicy(token OAuthToken, a *App) (*LabelPolicy, bool, error) {
 func isAdmin(token OAuthToken, a *App) bool {
 	return ContainsIgnoreCase(token.Groups, a.Cfg.Admin.Group) && a.Cfg.Admin.Bypass
 }
+
+// AlertAccess is a caller's level of access to the ruler and Alertmanager routes.
+type AlertAccess int
+
+const (
+	// AlertAccessNone reads an empty result set and cannot write.
+	AlertAccessNone AlertAccess = iota
+	// AlertAccessRead may list rules, alert instances and silences.
+	AlertAccessRead
+	// AlertAccessWrite may additionally create and expire silences and write the
+	// Alertmanager configuration.
+	AlertAccessWrite
+)
+
+// alertingAccess resolves a caller's access to the ruler and Alertmanager routes from
+// their group membership.
+//
+// The admin group always implies write access. Note this does not consult
+// admin.bypass: that flag governs whether admins skip label enforcement on queries, and
+// these routes carry no query to enforce.
+func alertingAccess(token OAuthToken, a *App) AlertAccess {
+	if a.Cfg.Admin.Group != "" && ContainsIgnoreCase(token.Groups, a.Cfg.Admin.Group) {
+		return AlertAccessWrite
+	}
+	if containsAnyIgnoreCase(token.Groups, a.Cfg.Alerting.AdminGroups) {
+		return AlertAccessWrite
+	}
+	if containsAnyIgnoreCase(token.Groups, a.Cfg.Alerting.ViewerGroups) {
+		return AlertAccessRead
+	}
+	return AlertAccessNone
+}
+
+// containsAnyIgnoreCase reports whether groups contains any of wanted, ignoring case.
+// Empty entries in wanted never match, so an unset config grants nothing.
+func containsAnyIgnoreCase(groups []string, wanted []string) bool {
+	for _, w := range wanted {
+		if w == "" {
+			continue
+		}
+		if ContainsIgnoreCase(groups, w) {
+			return true
+		}
+	}
+	return false
+}
