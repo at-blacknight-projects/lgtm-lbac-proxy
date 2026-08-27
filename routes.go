@@ -50,6 +50,8 @@ func (a *App) WithRoutes() *App {
 	a.WithLoki()
 	a.WithThanos()
 	a.WithTempo()
+	a.WithRuler()
+	a.WithAlertmanager()
 	return a
 }
 
@@ -210,6 +212,206 @@ func (a *App) WithThanos() *App {
 
 	}
 	return a
+}
+
+// Empty result sets returned to callers without alerting access, in place of an error.
+// Grafana's alert list loads the ruler endpoints unprompted for every signed-in user, so
+// answering 403 there would paint a failure on a page the caller never asked for.
+const (
+	emptyRuleGroups = `{"status":"success","data":{"groups":[]}}`
+	emptyAlerts     = `{"status":"success","data":{"alerts":[]}}`
+)
+
+// AlertRoute is a ruler or Alertmanager endpoint.
+//
+// Methods are the HTTP methods the route accepts; WriteMethods is the subset requiring
+// AlertAccessWrite. Empty, when set, is the JSON body returned to a caller with no
+// alerting access instead of an error — a route without it refuses them outright.
+type AlertRoute struct {
+	Url          string
+	Methods      []string
+	WriteMethods []string
+	Empty        string
+}
+
+// isWrite reports whether method on this route requires AlertAccessWrite.
+func (r AlertRoute) isWrite(method string) bool {
+	for _, m := range r.WriteMethods {
+		if m == method {
+			return true
+		}
+	}
+	return false
+}
+
+// alertDecision is what alertHandler does with a request once the caller's access is known.
+type alertDecision int
+
+const (
+	// alertForward proxies the request to the upstream.
+	alertForward alertDecision = iota
+	// alertEmpty answers 200 with the route's empty result set.
+	alertEmpty
+	// alertDeny answers 403: the caller has no alerting access at all.
+	alertDeny
+	// alertDenyWrite answers 403: the caller may read but not write.
+	alertDenyWrite
+)
+
+// decideAlertRequest resolves a request to an outcome from the caller's access and the
+// request method.
+//
+// A caller with no access reads the route's empty result set where one is defined, so a
+// UI that loads these endpoints unprompted renders clean rather than showing a failure
+// the caller never asked for. Writes, and routes with no meaningful empty form, are
+// refused outright.
+func decideAlertRequest(route AlertRoute, method string, access AlertAccess) alertDecision {
+	switch {
+	case access == AlertAccessWrite:
+		return alertForward
+	case route.isWrite(method):
+		if access == AlertAccessRead {
+			return alertDenyWrite
+		}
+		return alertDeny
+	case access == AlertAccessRead:
+		return alertForward
+	case route.Empty != "":
+		return alertEmpty
+	default:
+		return alertDeny
+	}
+}
+
+// WithRuler adds the read-only ruler endpoints that Grafana's alerting UI queries to list
+// data source managed rules and their firing instances, and returns the updated App.
+//
+// These endpoints carry no query parameter, so there is nothing for the PromQL/LogQL
+// enforcers to rewrite and no way to scope a response per tenant; access is by group
+// instead (see AlertingConfig). The ruler *configuration* API is deliberately absent, so
+// rules stay read-only in Grafana and whatever manages them as code remains authoritative.
+//
+// Prometheus HTTP API: https://prometheus.io/docs/prometheus/latest/querying/api/#rules
+func (a *App) WithRuler() *App {
+	if !a.Cfg.Alerting.Enabled {
+		log.Info().Msg("Alerting disabled, skipping ruler routes")
+		return a
+	}
+
+	if a.Cfg.Thanos.URL != "" {
+		// Mimir serves the Prometheus API under a base path; carry that on thanos.url
+		// so these sit at the root alongside the query routes, as Grafana expects.
+		routes := []AlertRoute{
+			{Url: "/api/v1/rules", Methods: []string{http.MethodGet}, Empty: emptyRuleGroups},
+			{Url: "/api/v1/alerts", Methods: []string{http.MethodGet}, Empty: emptyAlerts},
+		}
+		a.registerAlertRoutes(a.e.PathPrefix("").Subrouter(), routes, a.thanosProxy,
+			a.Cfg.GetProxyConfig(a.Cfg.Thanos.Proxy), a.Cfg.Thanos.UseMutualTLS,
+			a.Cfg.Thanos.Headers, "thanos-ruler")
+	}
+
+	if a.Cfg.Loki.URL != "" {
+		// Loki's ruler serves the Prometheus-compatible API under /prometheus.
+		routes := []AlertRoute{
+			{Url: "/prometheus/api/v1/rules", Methods: []string{http.MethodGet}, Empty: emptyRuleGroups},
+			{Url: "/prometheus/api/v1/alerts", Methods: []string{http.MethodGet}, Empty: emptyAlerts},
+		}
+		a.registerAlertRoutes(a.e.PathPrefix("").Subrouter(), routes, a.lokiProxy,
+			a.Cfg.GetProxyConfig(a.Cfg.Loki.Proxy), a.Cfg.Loki.UseMutualTLS,
+			a.Cfg.Loki.Headers, "loki-ruler")
+	}
+
+	return a
+}
+
+// WithAlertmanager adds the Alertmanager API routes to the App's router, logging a
+// warning if the Alertmanager URL is not set, and returns the updated App.
+//
+// Silences are global to the Alertmanager and carry no tenant identity, so creating and
+// expiring them requires AlertAccessWrite rather than being label-scoped.
+//
+// The Cortex/Mimir Alertmanager *configuration* API is deliberately absent, for the same
+// reason as the ruler's: contact points and the routing tree are managed as code. It
+// would also be unroutable here — clients ask for it at /api/v1/alerts on the root
+// rather than under the Alertmanager base path, where it collides with the ruler's
+// endpoint of the same name.
+//
+// Alertmanager HTTP API: https://prometheus.io/docs/alerting/latest/https/#api
+func (a *App) WithAlertmanager() *App {
+	if !a.Cfg.Alerting.Enabled {
+		return a
+	}
+	if a.Cfg.Alertmanager.URL == "" {
+		log.Warn().Msg("Alertmanager URL not set, skipping Alertmanager routes")
+		return a
+	}
+
+	routes := []AlertRoute{
+		{Url: "/api/v2/status", Methods: []string{http.MethodGet}},
+		{Url: "/api/v2/receivers", Methods: []string{http.MethodGet}},
+		{Url: "/api/v2/alerts", Methods: []string{http.MethodGet}},
+		{Url: "/api/v2/alerts/groups", Methods: []string{http.MethodGet}},
+		{Url: "/api/v2/silences", Methods: []string{http.MethodGet, http.MethodPost}, WriteMethods: []string{http.MethodPost}},
+		{Url: "/api/v2/silence/{id}", Methods: []string{http.MethodGet, http.MethodDelete}, WriteMethods: []string{http.MethodDelete}},
+	}
+
+	router := a.e.PathPrefix(a.Cfg.Alertmanager.PathPrefix).Subrouter()
+	a.registerAlertRoutes(router, routes, a.alertmanagerProxy,
+		a.Cfg.GetProxyConfig(a.Cfg.Alertmanager.Proxy), a.Cfg.Alertmanager.UseMutualTLS,
+		a.Cfg.Alertmanager.Headers, "alertmanager")
+
+	return a
+}
+
+// registerAlertRoutes binds each route to the group-gated alerting handler on router.
+func (a *App) registerAlertRoutes(router *mux.Router, routes []AlertRoute, proxy *httputil.ReverseProxy, proxyCfg ProxyConfig, tls bool, headers map[string]string, upstream string) {
+	for _, route := range routes {
+		log.Trace().Any("route", route).Str("upstream", upstream).Msg("Alerting route")
+		router.HandleFunc(route.Url, alertHandler(route, proxy, proxyCfg, tls, headers, a)).
+			Methods(route.Methods...).
+			Name(upstream + " " + route.Url)
+	}
+}
+
+// alertHandler authenticates the caller, resolves their alerting access from group
+// membership, and forwards to the upstream. Unlike handlerWithProxy there is no query
+// enforcement step — see AlertingConfig for why.
+func alertHandler(route AlertRoute, proxy *httputil.ReverseProxy, proxyCfg ProxyConfig, tls bool, headers map[string]string, a *App) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), proxyCfg.RequestTimeout)
+		defer cancel()
+		r = r.WithContext(ctx)
+
+		oauthToken, err := getToken(r, a)
+		if err != nil {
+			logAndWriteError(w, http.StatusForbidden, err, "")
+			return
+		}
+
+		switch decideAlertRequest(route, r.Method, alertingAccess(oauthToken, a)) {
+		case alertEmpty:
+			log.Debug().Str("user", oauthToken.PreferredUsername).Str("path", r.URL.Path).
+				Msg("No alerting access, returning empty result")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(route.Empty))
+			return
+		case alertDeny:
+			logAndWriteError(w, http.StatusForbidden, fmt.Errorf("no alerting access"), "")
+			return
+		case alertDenyWrite:
+			logAndWriteError(w, http.StatusForbidden, fmt.Errorf("alerting write access required"), "")
+			return
+		}
+
+		// Matches handlerWithProxy: the Director reads these for actor header injection.
+		ctx = context.WithValue(ctx, "username", oauthToken.PreferredUsername)
+		ctx = context.WithValue(ctx, "email", oauthToken.Email)
+		r = r.WithContext(ctx)
+
+		setHeaders(r, tls, headers, a.ServiceAccountToken)
+		proxy.ServeHTTP(w, r)
+	}
 }
 
 // handlerWithProxy orchestrates the request flow through the proxy using pre-created

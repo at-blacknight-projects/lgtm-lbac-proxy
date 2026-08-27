@@ -48,6 +48,28 @@ tempo:
   #   requestTimeout: 300s         # Override: Trace queries need longer timeout
   #   maxIdleConnsPerHost: 50      # Override: Lower volume, fewer connections needed
 
+alertmanager:
+  enabled: false # Set to true to proxy the Alertmanager API
+  url: http://alertmanager.monitoring.svc.cluster.local:9093
+  # Mimir and Cortex serve the Alertmanager API under /alertmanager. Set to "" for a
+  # standalone Alertmanager, which serves it at the root.
+  pathPrefix: /alertmanager
+  actorHeader: ""
+  headers: {}
+
+# Access control for the ruler and Alertmanager routes (see `alertmanager` above).
+#
+# These endpoints return whole rule groups and alert instances rather than a query, so
+# there is no expression to rewrite and no per-tenant scoping to apply. Access is by
+# group instead: viewerGroups may read, adminGroups may additionally create and expire
+# silences and write the Alertmanager configuration. The admin.group above always
+# implies both. A caller in none of them reads an empty result set rather than an error,
+# so a UI that loads these endpoints unprompted renders clean.
+alerting:
+  enabled: false # Set to true to register the ruler + Alertmanager routes
+  viewerGroups: []
+  adminGroups: []
+
 alert:
   enabled: false # enable alerting
   tokenHeader: X-LGTM-Alert # header to use for the token
@@ -164,6 +186,11 @@ tls:
   tempo:
     enabled: false # enable mTLS for tempo
     secretName: tempo-query-frontend-tls # name of the secret
+    cert: tls.crt
+    key: tls.key
+  alertmanager:
+    enabled: false # enable mTLS for alertmanager
+    secretName: alertmanager-tls # name of the secret
     cert: tls.crt
     key: tls.key
 

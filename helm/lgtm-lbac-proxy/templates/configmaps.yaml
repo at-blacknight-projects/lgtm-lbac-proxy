@@ -77,6 +77,29 @@ data:
         {{ $key }}: {{ $value }}
         {{- end }}
 
+    alertmanager:
+      url: {{ if .Values.alertmanager.enabled }}{{ .Values.alertmanager.url }}{{ else }}""{{ end }}
+      path_prefix: {{ .Values.alertmanager.pathPrefix | quote }}
+      use_mutual_tls: {{ .Values.tls.alertmanager.enabled }}
+      cert: "/etc/secrets/ca/alertmanager/{{ .Values.tls.alertmanager.cert }}"
+      key: "/etc/secrets/ca/alertmanager/{{ .Values.tls.alertmanager.key }}"
+      actor_header: {{ .Values.alertmanager.actorHeader }}
+      headers:
+        {{- range $key, $value := .Values.alertmanager.headers }}
+        {{ $key }}: {{ $value }}
+        {{- end }}
+
+    alerting:
+      enabled: {{ .Values.alerting.enabled }}
+      viewer_groups:
+        {{- range .Values.alerting.viewerGroups }}
+        - {{ . | quote }}
+        {{- end }}
+      admin_groups:
+        {{- range .Values.alerting.adminGroups }}
+        - {{ . | quote }}
+        {{- end }}
+
     labelstore:
       config_paths:
         {{- range .Values.labelStore.configPaths }}

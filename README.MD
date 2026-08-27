@@ -109,7 +109,36 @@ The proxy intercepts queries to Prometheus/Thanos, Loki, and Tempo, validates JW
 - ✅ **Metrics**: Prometheus, Thanos, Mimir (PromQL enforcement)
 - ✅ **Logging**: Loki (LogQL enforcement)
 - ✅ **Traces**: Tempo (TraceQL enforcement) 🆕
+- ✅ **Alerting**: ruler rules/alerts + Alertmanager API (group-based access) 🆕
 - ⏳ **Profiles**: Planned for future release
+
+The ruler and Alertmanager endpoints return whole rule groups, alert instances and
+silences rather than a query, so there is no expression to rewrite and no per-tenant
+scoping to apply. They are gated by group membership instead — `viewer_groups` may read,
+`admin_groups` may additionally create and expire silences and write the Alertmanager
+configuration — and are off unless `alerting.enabled` is set:
+
+```yaml
+alerting:
+  enabled: true
+  viewer_groups: ["alert-viewer"]
+  admin_groups: ["alert-admin"]
+
+alertmanager:
+  url: "http://mimir-gateway.monitoring.svc.cluster.local"
+  path_prefix: "/alertmanager"   # "" for a standalone Alertmanager
+```
+
+A caller in none of those groups reads an empty result set from the rules endpoints
+rather than an error, so a UI that loads them unprompted renders clean.
+
+Neither *configuration* API — the ruler's, nor the Cortex/Mimir Alertmanager's — is
+proxied. Rules, contact points and the routing tree stay read-only, leaving whatever
+manages them as code authoritative. Point Grafana's Alertmanager data source at
+`<proxy>/alertmanager` with `implementation: prometheus`, which asks for exactly the
+`/api/v2/*` endpoints above; the `mimir` implementation additionally requests the
+configuration API at `/api/v1/alerts` on the root, where it would collide with the
+ruler's endpoint of the same name.
 
 ---
 
