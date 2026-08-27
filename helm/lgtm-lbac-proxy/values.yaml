@@ -66,9 +66,10 @@ alertmanager:
 # empty result set rather than an error, so a UI that loads these endpoints unprompted
 # renders clean.
 #
-# Neither configuration API is proxied — the ruler's nor the Alertmanager's — so rules,
-# contact points and the routing tree stay read-only and whatever manages them as code
-# remains authoritative.
+# The ruler's configuration API is proxied for GET only (a UI needs it to open a single
+# rule group); its write methods and the Alertmanager's configuration API are not routed
+# at all, so rules, contact points and the routing tree stay read-only and whatever
+# manages them as code remains authoritative.
 alerting:
   enabled: false # Set to true to register the ruler + Alertmanager routes
   viewerGroups: []

@@ -132,9 +132,11 @@ alertmanager:
 A caller in none of those groups reads an empty result set from the rules endpoints
 rather than an error, so a UI that loads them unprompted renders clean.
 
-Neither *configuration* API — the ruler's, nor the Cortex/Mimir Alertmanager's — is
-proxied. Rules, contact points and the routing tree stay read-only, leaving whatever
-manages them as code authoritative. Point Grafana's Alertmanager data source at
+The ruler's *configuration* API is proxied for `GET` only — a UI needs it to open a
+single rule group, since listing groups and opening one are different endpoints — while
+the write methods stay unrouted, so rules remain read-only. The Cortex/Mimir
+Alertmanager's configuration API is not proxied at all, keeping contact points and the
+routing tree as-code. Point Grafana's Alertmanager data source at
 `<proxy>/alertmanager` with `implementation: prometheus`, which asks for exactly the
 `/api/v2/*` endpoints above; the `mimir` implementation additionally requests the
 configuration API at `/api/v1/alerts` on the root, where it would collide with the

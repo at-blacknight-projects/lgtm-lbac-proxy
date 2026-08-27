@@ -288,8 +288,12 @@ func decideAlertRequest(route AlertRoute, method string, access AlertAccess) ale
 //
 // These endpoints carry no query parameter, so there is nothing for the PromQL/LogQL
 // enforcers to rewrite and no way to scope a response per tenant; access is by group
-// instead (see AlertingConfig). The ruler *configuration* API is deliberately absent, so
-// rules stay read-only in Grafana and whatever manages them as code remains authoritative.
+// instead (see AlertingConfig).
+//
+// The ruler *configuration* API is registered for GET only. A UI needs it to render a
+// single rule group — listing groups and opening one are different endpoints — but
+// leaving the write methods unrouted keeps rules read-only, so whatever manages them as
+// code stays authoritative.
 //
 // Prometheus HTTP API: https://prometheus.io/docs/prometheus/latest/querying/api/#rules
 func (a *App) WithRuler() *App {
@@ -304,6 +308,10 @@ func (a *App) WithRuler() *App {
 		routes := []AlertRoute{
 			{Url: "/api/v1/rules", Methods: []string{http.MethodGet}, Empty: emptyRuleGroups},
 			{Url: "/api/v1/alerts", Methods: []string{http.MethodGet}, Empty: emptyAlerts},
+			// Ruler configuration API, read-only (Mimir/Cortex).
+			{Url: "/config/v1/rules", Methods: []string{http.MethodGet}},
+			{Url: "/config/v1/rules/{namespace}", Methods: []string{http.MethodGet}},
+			{Url: "/config/v1/rules/{namespace}/{group}", Methods: []string{http.MethodGet}},
 		}
 		a.registerAlertRoutes(a.e.PathPrefix("").Subrouter(), routes, a.thanosProxy,
 			a.Cfg.GetProxyConfig(a.Cfg.Thanos.Proxy), a.Cfg.Thanos.UseMutualTLS,
@@ -311,10 +319,14 @@ func (a *App) WithRuler() *App {
 	}
 
 	if a.Cfg.Loki.URL != "" {
-		// Loki's ruler serves the Prometheus-compatible API under /prometheus.
+		// Loki's ruler serves the Prometheus-compatible API under /prometheus, and its
+		// own configuration API under /loki/api/v1/rules.
 		routes := []AlertRoute{
 			{Url: "/prometheus/api/v1/rules", Methods: []string{http.MethodGet}, Empty: emptyRuleGroups},
 			{Url: "/prometheus/api/v1/alerts", Methods: []string{http.MethodGet}, Empty: emptyAlerts},
+			{Url: "/loki/api/v1/rules", Methods: []string{http.MethodGet}},
+			{Url: "/loki/api/v1/rules/{namespace}", Methods: []string{http.MethodGet}},
+			{Url: "/loki/api/v1/rules/{namespace}/{group}", Methods: []string{http.MethodGet}},
 		}
 		a.registerAlertRoutes(a.e.PathPrefix("").Subrouter(), routes, a.lokiProxy,
 			a.Cfg.GetProxyConfig(a.Cfg.Loki.Proxy), a.Cfg.Loki.UseMutualTLS,
@@ -330,10 +342,10 @@ func (a *App) WithRuler() *App {
 // Silences are global to the Alertmanager and carry no tenant identity, so creating and
 // expiring them requires AlertAccessWrite rather than being label-scoped.
 //
-// The Cortex/Mimir Alertmanager *configuration* API is deliberately absent, for the same
-// reason as the ruler's: contact points and the routing tree are managed as code. It
-// would also be unroutable here — clients ask for it at /api/v1/alerts on the root
-// rather than under the Alertmanager base path, where it collides with the ruler's
+// The Cortex/Mimir Alertmanager *configuration* API is deliberately absent, unlike the
+// ruler's read-only equivalent above: contact points and the routing tree are managed as
+// code. It would also be unroutable here — clients ask for it at /api/v1/alerts on the
+// root rather than under the Alertmanager base path, where it collides with the ruler's
 // endpoint of the same name.
 //
 // Alertmanager HTTP API: https://prometheus.io/docs/alerting/latest/https/#api
@@ -347,6 +359,9 @@ func (a *App) WithAlertmanager() *App {
 	}
 
 	routes := []AlertRoute{
+		// Grafana probes buildinfo through the plain data source proxy to identify the
+		// Alertmanager before it will talk to it at all.
+		{Url: "/api/v1/status/buildinfo", Methods: []string{http.MethodGet}},
 		{Url: "/api/v2/status", Methods: []string{http.MethodGet}},
 		{Url: "/api/v2/receivers", Methods: []string{http.MethodGet}},
 		{Url: "/api/v2/alerts", Methods: []string{http.MethodGet}},

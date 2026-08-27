@@ -150,15 +150,27 @@ func TestRulerAndAlertmanagerRoutesRegistered(t *testing.T) {
 		"GET /alertmanager/api/v2/silences",
 		"POST /alertmanager/api/v2/silences",
 		"DELETE /alertmanager/api/v2/silence/{id}",
+		// Grafana probes buildinfo before it will talk to an Alertmanager at all.
+		"GET /alertmanager/api/v1/status/buildinfo",
+		// Opening a single rule group is a different endpoint from listing them, and a
+		// UI needs both. Read-only: see the write assertions below.
+		"GET /config/v1/rules",
+		"GET /config/v1/rules/{namespace}/{group}",
+		"GET /loki/api/v1/rules/{namespace}/{group}",
 	}
 	for _, route := range want {
 		assert.True(t, got[route], "expected route %q to be registered", route)
 	}
 
-	// Rules are managed as code; exposing the ruler configuration API would let Grafana
-	// write rules that the next sync silently reverts.
-	assert.False(t, got["POST /config/v1/rules"], "ruler configuration API must not be exposed")
-	assert.False(t, got["GET /config/v1/rules"], "ruler configuration API must not be exposed")
+	// Rules are managed as code; routing the ruler's write methods would let a UI save
+	// rules that the next sync silently reverts.
+	for _, route := range []string{
+		"POST /config/v1/rules", "POST /config/v1/rules/{namespace}",
+		"DELETE /config/v1/rules/{namespace}/{group}",
+		"POST /loki/api/v1/rules/{namespace}", "DELETE /loki/api/v1/rules/{namespace}/{group}",
+	} {
+		assert.False(t, got[route], "ruler configuration API must stay read-only, got %q", route)
+	}
 
 	// Same for the Alertmanager configuration API. Clients ask for it at the root, where
 	// it would shadow the ruler's /api/v1/alerts and forward to the wrong upstream.
