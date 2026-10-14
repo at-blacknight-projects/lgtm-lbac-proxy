@@ -26,6 +26,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	metrics "github.com/slok/go-http-metrics/metrics/prometheus"
 	"github.com/slok/go-http-metrics/middleware"
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -137,6 +138,102 @@ func TestValidateIngestConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The ingest section as the chart renders it must load through viper the way
+// WithConfig loads it: "::" key delimiter, so dotted group names stay whole, and
+// lowercased map keys, which ingestWriter matches case-insensitively.
+func TestIngestConfigLoadsFromRenderedYAML(t *testing.T) {
+	rendered := `
+web:
+  proxy_port: 8080
+  metrics_port: 8081
+ingest:
+  enabled: true
+  port: 8444
+  server_cert: /etc/secrets/ingest/tls.crt
+  server_key: /etc/secrets/ingest/tls.key
+  max_body_bytes: 5242880
+  writer_header: "X-Ingest-Writer"
+  writers:
+    "otlp-writer-app-a": "app-a"
+    "otlp.writer.b": "app-b"
+    "OTLP-Writer-C": "app-c"
+  metrics:
+    url: "http://receiver.example.com:4320"
+  logs:
+    url: "http://receiver.example.com:4320"
+`
+	v := viper.NewWithOptions(viper.KeyDelimiter("::"))
+	v.SetConfigType("yaml")
+	require.NoError(t, v.ReadConfig(strings.NewReader(rendered)))
+	cfg := &Config{}
+	require.NoError(t, v.Unmarshal(cfg))
+
+	assert.NoError(t, validateIngestConfig(cfg))
+	assert.Equal(t, int64(5242880), cfg.Ingest.MaxBodyBytes)
+	assert.Equal(t, "http://receiver.example.com:4320", cfg.Ingest.signalURL(signalLogs))
+	assert.Empty(t, cfg.Ingest.signalURL(signalTraces))
+	assert.Equal(t, map[string]string{
+		"otlp-writer-app-a": "app-a",
+		"otlp.writer.b":     "app-b",
+		"otlp-writer-c":     "app-c",
+	}, cfg.Ingest.Writers)
+
+	for group, want := range map[string]string{"otlp.writer.b": "app-b", "OTLP-Writer-C": "app-c"} {
+		got, err := ingestWriter(OAuthToken{Groups: []string{group}}, cfg.Ingest)
+		assert.NoError(t, err)
+		assert.Equal(t, want, got)
+	}
+}
+
+func TestValidateIngestOnlyRequiresEnabled(t *testing.T) {
+	c := validIngestConfig()
+	c.Ingest.Enabled = false
+	c.Ingest.Only = true
+	assert.ErrorContains(t, validateIngestConfig(c), "ingest.only requires ingest.enabled")
+
+	c.Ingest.Enabled = true
+	assert.NoError(t, validateIngestConfig(c))
+}
+
+// In ingest-only mode the process sets up nothing on the read side: no label store
+// (so no labels file is needed), no read upstreams and no read routes.
+func TestIngestOnlySetsUpNoReadPath(t *testing.T) {
+	receiver := okReceiverURL(t)
+	app := ingestRoutesApp(IngestConfig{
+		Enabled: true,
+		Only:    true,
+		Metrics: IngestSignalConfig{URL: receiver},
+		Writers: map[string]string{"otlp-writer-app-a": "app-a"},
+	})
+	// No labels.yaml here: loading a label store would be fatal.
+	app.Cfg.LabelStore.ConfigPaths = []string{t.TempDir()}
+
+	app.WithLabelStore().WithProxies().WithRoutes().WithIngest()
+
+	assert.Nil(t, app.LabelStore)
+	assert.Nil(t, app.thanosProxy)
+	assert.Nil(t, app.lokiProxy)
+	assert.Nil(t, app.tempoProxy)
+	assert.Nil(t, app.alertmanagerProxy)
+	assert.Nil(t, app.e, "no read router in ingest-only mode")
+	assert.NotNil(t, app.ingestProxies[signalMetrics])
+	assert.True(t, registeredRoutes(t, app.w)["POST /v1/metrics"])
+}
+
+// Without ingest.only, enabling ingest leaves the read side as it was.
+func TestIngestAlongsideReadPath(t *testing.T) {
+	app := ingestRoutesApp(IngestConfig{
+		Enabled: true,
+		Metrics: IngestSignalConfig{URL: okReceiverURL(t)},
+	})
+	app.WithProxies().WithRoutes().WithIngest()
+
+	assert.NotNil(t, app.thanosProxy)
+	assert.NotNil(t, app.lokiProxy)
+	assert.NotNil(t, app.e)
+	assert.NotNil(t, app.w)
 }
 
 // ingestRoutesApp configures every read upstream and alerting, so the read router has

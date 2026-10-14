@@ -43,6 +43,10 @@ func (a *App) WithHealthz() *App {
 // WithRoutes initializes a new router, sets up logging middleware, and assigns
 // the router to the App's router field, returning the updated App.
 func (a *App) WithRoutes() *App {
+	if a.ingestOnly() {
+		log.Info().Msg("Ingest-only: no read routes")
+		return a
+	}
 	e := mux.NewRouter()
 	e.Use(a.loggingMiddleware)
 	e.SkipClean(true)

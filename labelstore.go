@@ -48,6 +48,10 @@ type Labelstore interface {
 // It assigns the connected LabelStore to the App instance and returns it.
 // If an error occurs during the connection, it logs a fatal error.
 func (a *App) WithLabelStore() *App {
+	if a.ingestOnly() {
+		log.Info().Msg("Ingest-only: no label store")
+		return a
+	}
 	a.LabelStore = &FileLabelStore{}
 	err := a.LabelStore.Connect(a.Cfg.LabelStore)
 	if err != nil {

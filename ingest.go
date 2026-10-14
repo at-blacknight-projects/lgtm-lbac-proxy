@@ -102,6 +102,11 @@ func (c IngestConfig) signalURL(signal string) string {
 	return ""
 }
 
+// ingestOnly reports whether the process runs as a write gateway alone.
+func (a *App) ingestOnly() bool {
+	return a.Cfg.Ingest.Enabled && a.Cfg.Ingest.Only
+}
+
 // signalProxy returns the per-upstream proxy settings for signal.
 func (c IngestConfig) signalProxy(signal string) *ProxyConfig {
 	switch signal {
@@ -127,6 +132,9 @@ func (c IngestConfig) writerHeader() string {
 // it is disabled or valid.
 func validateIngestConfig(c *Config) error {
 	in := c.Ingest
+	if in.Only && !in.Enabled {
+		return errors.New("ingest.only requires ingest.enabled: the process would serve nothing")
+	}
 	if !in.Enabled {
 		return nil
 	}

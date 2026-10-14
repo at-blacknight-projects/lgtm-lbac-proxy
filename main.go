@@ -80,7 +80,8 @@ func main() {
 //     web.proxy_port.
 //
 // Independently of the above, ingest.enabled adds a TLS listener on ingest.port that
-// serves only the write router.
+// serves only the write router; with ingest.only, that and the metrics listener are the
+// only ones started.
 func (a *App) StartServer() {
 	go func() {
 		if err := http.ListenAndServe(fmt.Sprintf("%s:%d", a.Cfg.Web.Host, a.Cfg.Web.MetricsPort), a.i); err != nil {
@@ -91,6 +92,10 @@ func (a *App) StartServer() {
 	if a.Cfg.Ingest.Enabled && a.w != nil {
 		ingestMdlw := ingestHTTPMetrics(prometheus.DefaultRegisterer)
 		go a.serveIngest(fmt.Sprintf("%s:%d", a.Cfg.Web.Host, a.Cfg.Ingest.Port), std.Handler("/", ingestMdlw, a.w))
+	}
+	if a.ingestOnly() {
+		log.Info().Msg("Ingest-only: read listeners not started")
+		return
 	}
 
 	mdlw := middleware.New(middleware.Config{
@@ -188,6 +193,11 @@ func clientAuthType(s string) tls.ClientAuthType {
 // Each proxy gets its own dedicated transport with per-upstream configuration.
 func (a *App) WithProxies() *App {
 	log.Info().Msg("Initializing reverse proxies")
+
+	if a.ingestOnly() {
+		a.withIngestProxies()
+		return a
+	}
 
 	// Initialize Loki proxy if URL is configured
 	if a.Cfg.Loki.URL != "" {

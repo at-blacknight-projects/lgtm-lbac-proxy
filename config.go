@@ -212,7 +212,12 @@ type AlertingConfig struct {
 // Changes to Enabled, Port, the server certificate and the upstream URLs take effect on
 // restart; writers and the header name are read per request and follow config reloads.
 type IngestConfig struct {
-	Enabled      bool              `mapstructure:"enabled"`
+	Enabled bool `mapstructure:"enabled"`
+	// Only runs the process as a write gateway alone: no label store is loaded, no read
+	// upstreams or routes are set up, and only the ingest and metrics listeners are
+	// served. Deploy it separately from the read proxy so that the pods reachable by
+	// writers hold no read access at all.
+	Only         bool              `mapstructure:"only"`
 	Port         int               `mapstructure:"port"`
 	ServerCert   string            `mapstructure:"server_cert"`
 	ServerKey    string            `mapstructure:"server_key"`
