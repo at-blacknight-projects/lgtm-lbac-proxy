@@ -193,6 +193,61 @@ type AlertingConfig struct {
 	AdminGroups  []string `mapstructure:"admin_groups"`
 }
 
+// IngestConfig is the OTLP write gateway: a dedicated listener that accepts OTLP/HTTP
+// pushes from token-holding clients and forwards them, rewritten, to an OTLP receiver.
+//
+// The listener serves only the push routes and a health probe — never the query,
+// ruler or Alertmanager routes — so it can be published more widely than the read
+// path. Identity on it is JWT-only: client-certificate and trusted-header identity are
+// not consulted.
+//
+// Writers maps a group (as carried in the configured groups claim) to the writer id
+// the caller pushes as. The id replaces the OTLP resource service.name, and is
+// optionally stamped as a tenant attribute (TenantAttribute). Groups are matched
+// case-insensitively; viper lowercases map keys. The admin group does not imply write
+// access: every writer must be named explicitly.
+//
+// Changes to Enabled, Port and the server certificate take effect on restart; writers
+// and the attribute lists are read per request and follow config reloads.
+type IngestConfig struct {
+	Enabled      bool              `mapstructure:"enabled"`
+	Port         int               `mapstructure:"port"`
+	ServerCert   string            `mapstructure:"server_cert"`
+	ServerKey    string            `mapstructure:"server_key"`
+	Writers      map[string]string `mapstructure:"writers"`        // group -> writer id
+	MaxBodyBytes int64             `mapstructure:"max_body_bytes"` // cap on compressed AND decompressed body
+
+	// Per-signal OTLP/HTTP upstreams. A signal with no URL is not routed. The request
+	// path (/v1/metrics, /v1/logs, /v1/traces) is appended to the URL's base path, so a
+	// collector takes its base URL and an OTLP endpoint mounted under a prefix (for
+	// example /otlp) takes that prefix.
+	Metrics IngestSignalConfig `mapstructure:"metrics"`
+	Logs    IngestSignalConfig `mapstructure:"logs"`
+	Traces  IngestSignalConfig `mapstructure:"traces"`
+
+	// StripAttributes are removed from every attribute map in a payload (resource,
+	// scope, datapoint, log record, span, span event, span link). An entry ending in
+	// ".*" matches by prefix. List the keys the upstream derives tenancy or labels
+	// from, so a sender cannot set them.
+	StripAttributes []string `mapstructure:"strip_attributes"`
+	// TenantAttribute, when set, is upserted on every resource as TenantPrefix+<writer
+	// id>, after StripAttributes has run and with any sender-supplied value removed.
+	// Use it when the upstream stores the payload as-is and reads enforce on that
+	// resource attribute; leave it unset when the receiver derives tenancy from
+	// service.name itself.
+	TenantAttribute string `mapstructure:"tenant_attribute"`
+	TenantPrefix    string `mapstructure:"tenant_prefix"`
+	// DropMetricAttributes are removed from metric datapoints only, typically
+	// per-session or per-account identifiers that would otherwise become series labels.
+	DropMetricAttributes []string `mapstructure:"drop_metric_attributes"`
+}
+
+// IngestSignalConfig is the upstream for one OTLP signal.
+type IngestSignalConfig struct {
+	URL   string       `mapstructure:"url"`
+	Proxy *ProxyConfig `mapstructure:"proxy"` // Per-upstream proxy configuration override
+}
+
 type Config struct {
 	Log          LogConfig          `mapstructure:"log"`
 	Auth         AuthConfig         `mapstructure:"auth"` // Authentication configuration (preferred)
@@ -206,6 +261,7 @@ type Config struct {
 	Loki         LokiConfig         `mapstructure:"loki"`
 	Tempo        TempoConfig        `mapstructure:"tempo"`
 	Alertmanager AlertmanagerConfig `mapstructure:"alertmanager"`
+	Ingest       IngestConfig       `mapstructure:"ingest"` // OTLP write gateway
 	LabelStore   LabelStoreConfig   `mapstructure:"labelstore"`
 }
 
@@ -235,6 +291,7 @@ func (a *App) WithConfig() *App {
 	// Mimir and Cortex serve the Alertmanager API under /alertmanager. Set explicitly to
 	// "" for a standalone Alertmanager, which serves it at the root.
 	v.SetDefault("alertmanager::path_prefix", "/alertmanager")
+	v.SetDefault("ingest::max_body_bytes", defaultIngestMaxBodyBytes)
 
 	err := v.MergeInConfig()
 	if err != nil {
@@ -255,6 +312,9 @@ func (a *App) WithConfig() *App {
 	}
 	// Validate Tempo configuration if provided
 	a.validateTempoConfig()
+	if err := validateIngestConfig(a.Cfg); err != nil {
+		log.Fatal().Err(err).Msg("Invalid ingest configuration")
+	}
 	v.OnConfigChange(func(e fsnotify.Event) {
 		log.Info().Str("file", e.Name).Msg("Config file changed")
 		err := v.Unmarshal(a.Cfg)
@@ -270,6 +330,10 @@ func (a *App) WithConfig() *App {
 		}
 		// Validate Tempo configuration if provided
 		a.validateTempoConfig()
+		if err := validateIngestConfig(a.Cfg); err != nil {
+			log.Error().Err(err).Msg("Invalid ingest configuration")
+			a.healthy = false
+		}
 		zerolog.SetGlobalLevel(zerolog.Level(a.Cfg.Log.Level))
 	})
 	v.WatchConfig()

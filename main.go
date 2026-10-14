@@ -13,6 +13,7 @@ import (
 
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/gorilla/mux"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/rs/zerolog/pkgerrors"
@@ -34,6 +35,7 @@ type App struct {
 	alertmanagerProxy   *httputil.ReverseProxy
 	i                   *mux.Router
 	e                   *mux.Router
+	w                   *mux.Router // write (ingest) router, served only on the ingest listener
 	healthy             bool
 }
 
@@ -57,6 +59,7 @@ func main() {
 		WithProxies().
 		WithHealthz().
 		WithRoutes().
+		WithIngest().
 		StartServer()
 
 	log.Info().Any("config", app.Cfg)
@@ -73,12 +76,20 @@ func main() {
 //     clients keep working) AND an additive mTLS listener on mtls_port (expose this one).
 //   - Source "mtls" with mtls_port unset: the mTLS listener replaces the plain one on
 //     web.proxy_port.
+//
+// Independently of the above, ingest.enabled adds a TLS listener on ingest.port that
+// serves only the write router.
 func (a *App) StartServer() {
 	go func() {
 		if err := http.ListenAndServe(fmt.Sprintf("%s:%d", a.Cfg.Web.Host, a.Cfg.Web.MetricsPort), a.i); err != nil {
 			log.Fatal().Err(err).Msg("Error while serving metrics")
 		}
 	}()
+
+	if a.Cfg.Ingest.Enabled && a.w != nil {
+		ingestMdlw := ingestHTTPMetrics(prometheus.DefaultRegisterer)
+		go a.serveIngest(fmt.Sprintf("%s:%d", a.Cfg.Web.Host, a.Cfg.Ingest.Port), std.Handler("/", ingestMdlw, a.w))
+	}
 
 	mdlw := middleware.New(middleware.Config{
 		Recorder: metrics.NewRecorder(metrics.Config{}),
