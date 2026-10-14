@@ -32,7 +32,7 @@ func TestAlertingAccess(t *testing.T) {
 		{"admin group implies write", []string{"cluster-admin"}, "cluster-admin", AlertAccessWrite},
 		{"alerting admin group", []string{"alert-admin"}, "cluster-admin", AlertAccessWrite},
 		{"alerting viewer group", []string{"alert-viewer"}, "cluster-admin", AlertAccessRead},
-		{"unrelated group", []string{"team-audio"}, "cluster-admin", AlertAccessNone},
+		{"unrelated group", []string{"team-a"}, "cluster-admin", AlertAccessNone},
 		{"no groups", nil, "cluster-admin", AlertAccessNone},
 		{"case insensitive", []string{"Alert-Viewer"}, "cluster-admin", AlertAccessRead},
 		{"admin wins over viewer", []string{"alert-viewer", "cluster-admin"}, "cluster-admin", AlertAccessWrite},
@@ -54,7 +54,7 @@ func TestAlertingAccess(t *testing.T) {
 // naming groups cannot silently open them.
 func TestAlertingAccessUnconfiguredGrantsNothing(t *testing.T) {
 	app := alertingApp(AlertingConfig{Enabled: true}, "")
-	token := OAuthToken{PreferredUsername: "user", Groups: []string{"team-audio", "alert-viewer"}}
+	token := OAuthToken{PreferredUsername: "user", Groups: []string{"team-a", "alert-viewer"}}
 	assert.Equal(t, AlertAccessNone, alertingAccess(token, app))
 }
 

@@ -138,7 +138,7 @@ auth:
     # A secret is the default; a configMap (e.g. a trust-manager bundle) is also
     # supported. The secret takes precedence if both are set.
     caSecretName: ""                 # secret holding the CA bundle (default source)
-    caConfigMapName: ""              # alternative: configMap holding the CA bundle (e.g. trust-manager sca-root-ca)
+    caConfigMapName: ""              # alternative: configMap holding the CA bundle (e.g. a trust-manager Bundle target)
     caPath: /etc/secrets/client-ca/ca.crt  # must match a key in the secret/configMap above
     # Configurable admission: operators choose which cert attributes they trust.
     # Fields: cn, issuer_cn, template_oid, template_name, eku, san_dns, san_uri,
