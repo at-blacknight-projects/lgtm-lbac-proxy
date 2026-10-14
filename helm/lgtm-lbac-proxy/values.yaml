@@ -75,6 +75,57 @@ alerting:
   viewerGroups: []
   adminGroups: []
 
+# OTLP write gateway: a separate TLS listener that accepts OTLP/HTTP pushes
+# (POST /v1/metrics, /v1/logs, /v1/traces) from token-holding callers and forwards them
+# to an OTLP receiver. It serves only those routes and GET /healthz (unauthenticated, for
+# an edge or load balancer probe) — never a read route — so it can be exposed more widely
+# than the read path, for example through its own load balancer below.
+#
+# Identity is JWT-only on this listener. writers maps a group (from the groups claim) to
+# the writer id the caller pushes as; the admin group does not imply write access. The
+# body is forwarded unchanged with the writer id in writerHeader, replacing any value the
+# client sent. The upstream derives tenancy from that header, so it MUST be reachable
+# only through the gateway (for example a receiver port admitted by a NetworkPolicy to
+# these pods alone). For a multi-tenant backend, writerHeader can be its tenant header,
+# e.g. X-Scope-OrgID.
+ingest:
+  enabled: false
+  # Run this release as a write gateway alone: no read routes, read listeners, label
+  # store or read RBAC. Recommended when the ingest listener is exposed widely: install a
+  # second release of this chart for it (with its own nameOverride) so the pods writers
+  # can reach hold no read access. The read release keeps ingest disabled.
+  only: false
+  port: 8444
+  # OTLP/HTTP base URL per signal; /v1/<signal> is appended. Empty = not routed (404).
+  metrics:
+    url: ""                     # e.g. http://otel-receiver.example.svc:4318
+  logs:
+    url: ""
+  traces:
+    url: ""
+  writers: {}                   # e.g. { otlp-writer-app-a: app-a }
+  writerHeader: X-Ingest-Writer
+  maxBodyBytes: 5242880         # cap on the body as sent; the receiver bounds decompression
+  # Secret (tls.crt/tls.key) with the listener's server cert, mounted at /etc/secrets/ingest/.
+  serverSecretName: ""
+  # Optionally have the chart create a cert-manager Certificate for it (secretName =
+  # serverSecretName). issuerRef is passed through verbatim.
+  serverCertificate:
+    enabled: false
+    dnsNames: []                # e.g. ["otlp.example.com"]
+    duration: ""
+    issuerRef:
+      name: ""
+      kind: ClusterIssuer
+      group: cert-manager.io
+  # Optional LoadBalancer Service exposing ONLY the ingest port.
+  loadBalancer:
+    enabled: false
+    port: 443
+    loadBalancerIP: ""
+    externalTrafficPolicy: ""   # e.g. Local, to keep client source IPs
+    annotations: {}
+
 alert:
   enabled: false # enable alerting
   tokenHeader: X-LGTM-Alert # header to use for the token

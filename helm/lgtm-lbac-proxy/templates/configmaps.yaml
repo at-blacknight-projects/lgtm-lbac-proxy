@@ -136,6 +136,29 @@ data:
         {{- range .Values.alerting.adminGroups }}
         - {{ . | quote }}
         {{- end }}
+    {{- with .Values.ingest }}{{- if .enabled }}
+
+    ingest:
+      enabled: true
+      {{- if .only }}
+      only: true
+      {{- end }}
+      port: {{ .port }}
+      server_cert: /etc/secrets/ingest/tls.crt
+      server_key: /etc/secrets/ingest/tls.key
+      max_body_bytes: {{ .maxBodyBytes | int64 }}
+      writer_header: {{ .writerHeader | default "X-Ingest-Writer" | quote }}
+      writers:
+        {{- range $group, $id := .writers }}
+        {{ $group | quote }}: {{ $id | quote }}
+        {{- end }}
+      {{- range $signal := list "metrics" "logs" "traces" }}
+      {{- with (index $.Values.ingest $signal) }}{{- if .url }}
+      {{ $signal }}:
+        url: {{ .url | quote }}
+      {{- end }}{{- end }}
+      {{- end }}
+    {{- end }}{{- end }}
 
     labelstore:
       config_paths:
@@ -143,7 +166,7 @@ data:
         - {{ . }}
         {{- end }}
 ---
-{{- if .Values.labels }}
+{{- if and .Values.labels (not (include "lgtm-lbac-proxy.ingestOnly" .)) }}
 apiVersion: v1
 kind: ConfigMap
 metadata:

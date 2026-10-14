@@ -47,17 +47,26 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           ports:
+            {{- if not (include "lgtm-lbac-proxy.ingestOnly" .) }}
             - name: http
               containerPort: {{ .Values.service.webPort }}
               protocol: TCP
+            {{- end }}
             - name: metrics
               containerPort: {{ .Values.service.metricsPort }}
               protocol: TCP
+            {{- if not (include "lgtm-lbac-proxy.ingestOnly" .) }}
             {{- with .Values.auth }}{{- with .clientCert }}{{- if and .enabled (eq (.source | default "mtls") "mtls") .mtlsPort }}
             - name: mtls
               containerPort: {{ .mtlsPort }}
               protocol: TCP
             {{- end }}{{- end }}{{- end }}
+            {{- end }}
+            {{- if .Values.ingest.enabled }}
+            - name: ingest
+              containerPort: {{ .Values.ingest.port }}
+              protocol: TCP
+            {{- end }}
           resources:
             requests:
               cpu: {{ .Values.resources.requests.cpu }}
@@ -92,8 +101,10 @@ spec:
           volumeMounts:
             - mountPath: /etc/config/config/
               name: config
+            {{- if not (include "lgtm-lbac-proxy.ingestOnly" .) }}
             - mountPath: /etc/config/labels/
               name: labels
+            {{- end }}
             {{- if eq .Values.tls.loki.enabled true }}
             - mountPath: /etc/secrets/ca/loki/
               name: loki-tls-secret
@@ -110,7 +121,7 @@ spec:
             - mountPath: /etc/secrets/ca/alertmanager/
               name: alertmanager-tls-secret
             {{- end }}
-            {{- with .Values.auth }}{{- with .clientCert }}{{- if and .enabled (eq (.source | default "mtls") "mtls") }}
+            {{- with .Values.auth }}{{- with .clientCert }}{{- if and .enabled (eq (.source | default "mtls") "mtls") (not (include "lgtm-lbac-proxy.ingestOnly" $)) }}
             - mountPath: /etc/secrets/server/
               name: client-cert-server
               readOnly: true
@@ -118,13 +129,20 @@ spec:
               name: client-cert-ca
               readOnly: true
             {{- end }}{{- end }}{{- end }}
+            {{- if .Values.ingest.enabled }}
+            - mountPath: /etc/secrets/ingest/
+              name: ingest-server
+              readOnly: true
+            {{- end }}
       volumes:
         - configMap:
             name: {{ include "lgtm-lbac-proxy.name" . }}-config
           name: config
+        {{- if not (include "lgtm-lbac-proxy.ingestOnly" .) }}
         - configMap:
             name: {{ include "lgtm-lbac-proxy.name" . }}-labels
           name: labels
+        {{- end }}
           {{- if eq .Values.tls.loki.enabled true }}
         - name: loki-tls-secret
           secret:
@@ -145,7 +163,7 @@ spec:
           secret:
             secretName: {{ .Values.tls.alertmanager.secretName }}
           {{- end }}
-          {{- with .Values.auth }}{{- with .clientCert }}{{- if and .enabled (eq (.source | default "mtls") "mtls") }}
+          {{- with .Values.auth }}{{- with .clientCert }}{{- if and .enabled (eq (.source | default "mtls") "mtls") (not (include "lgtm-lbac-proxy.ingestOnly" $)) }}
         - name: client-cert-server
           secret:
             secretName: {{ .serverSecretName | required "auth.clientCert.serverSecretName is required when clientCert is enabled with source mtls" }}
@@ -160,6 +178,11 @@ spec:
           {{- fail "auth.clientCert: set caSecretName or caConfigMapName when clientCert is enabled with source mtls" }}
           {{- end }}
           {{- end }}{{- end }}{{- end }}
+          {{- if .Values.ingest.enabled }}
+        - name: ingest-server
+          secret:
+            secretName: {{ .Values.ingest.serverSecretName | required "ingest.serverSecretName is required when ingest is enabled" }}
+          {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

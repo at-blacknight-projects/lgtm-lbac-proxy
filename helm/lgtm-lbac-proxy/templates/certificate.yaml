@@ -1,5 +1,5 @@
 {{- with .Values.auth }}{{- with .clientCert }}
-{{- if and .enabled .serverCertificate .serverCertificate.enabled }}
+{{- if and .enabled .serverCertificate .serverCertificate.enabled (not (include "lgtm-lbac-proxy.ingestOnly" $)) }}
 # cert-manager Certificate for the proxy's mTLS server cert. secretName defaults to
 # clientCert.serverSecretName so the issued cert lands where the mTLS listener mounts it.
 # issuerRef is passed through verbatim to support non-standard issuers (e.g. ADCS).
@@ -27,3 +27,32 @@ spec:
     group: {{ .serverCertificate.issuerRef.group | default "cert-manager.io" }}
 {{- end }}
 {{- end }}{{- end }}
+{{- with .Values.ingest }}
+{{- if and .enabled .serverCertificate .serverCertificate.enabled }}
+---
+# cert-manager Certificate for the ingest listener's server cert. secretName is
+# ingest.serverSecretName, so the issued cert lands where the listener mounts it.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "lgtm-lbac-proxy.name" $ }}-ingest
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "lgtm-lbac-proxy.labels" $ | nindent 4 }}
+spec:
+  secretName: {{ .serverSecretName | required "ingest.serverSecretName is required when ingest.serverCertificate is enabled" }}
+  {{- with .serverCertificate.duration }}
+  duration: {{ . }}
+  {{- end }}
+  dnsNames:
+    {{- range .serverCertificate.dnsNames }}
+    - {{ . | quote }}
+    {{- end }}
+  usages:
+    - server auth
+  issuerRef:
+    name: {{ .serverCertificate.issuerRef.name | required "ingest.serverCertificate.issuerRef.name is required" }}
+    kind: {{ .serverCertificate.issuerRef.kind | default "ClusterIssuer" }}
+    group: {{ .serverCertificate.issuerRef.group | default "cert-manager.io" }}
+{{- end }}
+{{- end }}
