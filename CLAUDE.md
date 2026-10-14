@@ -67,7 +67,7 @@ go test -bench=. -benchmem -run=^$
 - **Memory Efficient**: Single storage of parsed policies (~50% memory reduction)
 - **Cache Strategy**: Individual policies cached, merged per-request for specific user+groups
 
-**Servers**: `:8080` (proxy) | `:8081` (metrics)
+**Servers**: `:8080` (proxy) | `:8081` (metrics) | optional mTLS port | optional ingest TLS port (`ingest.port`; with `ingest.only`, only metrics + ingest run)
 
 ## File Organization
 
@@ -78,6 +78,7 @@ go test -bench=. -benchmem -run=^$
 | **Labels** | `labelstore.go`, `labelrule.go`, `policyparser.go` | Eager parsing at startup, extended format, rules with operators (=, !=, =~, !~), AND/OR logic, fail-fast validation |
 | **Enforcers** | `enforcer_promql.go`, `enforcer_logql.go`, `enforcer_traceql.go` | Parse → validate → inject labels → return modified query |
 | **Routing** | `routes.go` | HTTP endpoints, orchestrate auth→validate→enforce→proxy |
+| **Ingest** | `ingest.go` | Optional OTLP write gateway: own TLS listener and router, JWT-only, group→writer id, forwards with a writer header; `ingest.only` runs it alone |
 | **Tests** | `*_test.go` (76+ tests), `*_bench_test.go` | Unit tests, integration tests, performance benchmarks |
 | **Config** | `configs/config.yaml`, `configs/labels.yaml` | Main config, user/group label mappings (extended only) |
 
@@ -303,5 +304,8 @@ Output: { resource.namespace="prod" && resource.team="backend" && span.http.stat
 | **Loki** | `/loki/api/v1/query`, `/loki/api/v1/query_range`, `/loki/api/v1/labels`, etc. |
 | **Thanos/Prometheus** | `/api/v1/query`, `/api/v1/query_range`, `/api/v1/series`, etc. |
 | **Tempo** | `/api/echo`, `/api/search`, `/api/v2/search`, `/api/traces/{traceID}`, `/api/metrics/*` |
+| **Ingest** (separate listener, `ingest.port`) | `POST /v1/metrics`, `POST /v1/logs`, `POST /v1/traces` (per configured signal), `GET /healthz` |
 
-All routes: `auth → validate labels → enforce query → proxy to upstream`
+All read routes: `auth → validate labels → enforce query → proxy to upstream`
+
+Ingest routes: `JWT (getToken, never getIdentity) → resolve writer from groups → cap body → overwrite writer header, drop credentials → stream body unchanged to the signal's upstream`. The write router (`a.w`) and read router (`a.e`) are separate, so neither listener can serve the other's routes. The upstream must be reachable only through the gateway, since it trusts the writer header.

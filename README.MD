@@ -110,6 +110,7 @@ The proxy intercepts queries to Prometheus/Thanos, Loki, and Tempo, validates JW
 - ✅ **Logging**: Loki (LogQL enforcement)
 - ✅ **Traces**: Tempo (TraceQL enforcement) 🆕
 - ✅ **Alerting**: ruler rules/alerts + Alertmanager API (group-based access) 🆕
+- ✅ **OTLP ingest**: token-authenticated OTLP/HTTP write gateway (opt-in) 🆕
 - ⏳ **Profiles**: Planned for future release
 
 The ruler and Alertmanager endpoints return whole rule groups, alert instances and
@@ -141,6 +142,161 @@ routing tree as-code. Point Grafana's Alertmanager data source at
 `/api/v2/*` endpoints above; the `mimir` implementation additionally requests the
 configuration API at `/api/v1/alerts` on the root, where it would collide with the
 ruler's endpoint of the same name.
+
+### OTLP write gateway
+
+An optional, separate listener accepts OTLP/HTTP pushes from callers holding a token,
+and forwards them to an OTLP receiver with the caller's identity attached. It is off
+unless `ingest.enabled` is set, and it serves only:
+
+| Route | Purpose |
+|-------|---------|
+| `POST /v1/metrics`, `POST /v1/logs`, `POST /v1/traces` | OTLP/HTTP push, each only when that signal has an upstream |
+| `GET /healthz` | Unauthenticated health probe for an edge or load balancer |
+
+No read route is served on it. How a push is handled:
+
+1. **JWT only.** The token is validated as on the read path (JWKS, `issuer`,
+   `audiences`). Client certificates and the trusted CN header are not identities on
+   this listener.
+2. **Writer resolution.** `writers` maps a group from the token's groups claim to a
+   *writer id*. Exactly one distinct id must match. A caller whose groups map to two
+   different ids is refused, and the admin group is not a writer unless listed.
+3. **Forwarding.** The body is streamed to the signal's upstream **unchanged**
+   (`Content-Type` and `Content-Encoding` pass through, capped at `max_body_bytes`).
+   The writer id is sent in `writer_header`, replacing any value the client set. The
+   caller's token is not forwarded. The upstream's status and body come back as-is.
+
+The upstream is expected to derive tenancy from the writer header, so **it must be
+reachable only through the gateway**, for example a receiver port that a NetworkPolicy
+admits from the gateway's pods alone. Anything that can reach it directly can claim any
+writer.
+
+```yaml
+ingest:
+  enabled: true
+  port: 8444
+  server_cert: /etc/secrets/ingest/tls.crt
+  server_key: /etc/secrets/ingest/tls.key
+  writer_header: X-Ingest-Writer   # default
+  max_body_bytes: 5242880           # default; the receiver bounds decompressed size
+  writers:
+    otlp-writer-app-a: app-a
+    otlp-writer-app-b: app-b
+  metrics:
+    url: http://otel-gateway-receiver.observability.svc:4320   # /v1/metrics is appended
+  logs:
+    url: http://otel-gateway-receiver.observability.svc:4320
+  # traces: { url: ... }            # unset = not routed (404)
+```
+
+**Upstream options.**
+
+*A multi-tenant backend* can take the writer id as its tenant directly, with no receiver
+config. For example, set `writer_header: X-Scope-OrgID` and point the signals at a
+multi-tenant Mimir, Loki or Tempo distributor's OTLP endpoints (e.g.
+`http://mimir-distributor:8080/otlp`).
+
+*An OpenTelemetry Collector or Alloy receiver* can turn the header into resource
+attributes. Copy it from client metadata, drop anything that arrives without it, and
+set `service.name`. In Alloy:
+
+```alloy
+otelcol.receiver.otlp "gateway" {
+  http {
+    endpoint         = "0.0.0.0:4320"
+    include_metadata = true          // makes request headers available as metadata.*
+  }
+  output { metrics = [otelcol.processor.attributes.writer.input] }
+}
+
+otelcol.processor.attributes "writer" {
+  action {
+    key          = "ingest.writer"
+    from_context = "metadata.x-ingest-writer"
+    action       = "upsert"
+  }
+  output { metrics = [otelcol.processor.filter.writer.input] }
+}
+
+// Fail closed: no writer header, no data.
+otelcol.processor.filter "writer" {
+  metrics { datapoint = [`attributes["ingest.writer"] == nil`] }
+  output  { metrics = [otelcol.processor.transform.writer.input] }
+}
+
+otelcol.processor.transform "writer" {
+  metric_statements {
+    context    = "datapoint"
+    statements = [
+      `set(resource.attributes["service.name"], attributes["ingest.writer"])`,
+      `delete_key(attributes, "ingest.writer")`,
+    ]
+  }
+  output { metrics = [/* your tenancy stamping and exporters */] }
+}
+```
+
+Logs follow the same shape, using the `log` context and filtering on `log_record`.
+Attributes the receiver derives tenancy or labels from belong in that pipeline too,
+deleted or overwritten. That is receiver policy, not the gateway's.
+
+**Deployment layouts.** The Helm chart supports both:
+
+- **Co-located:** set `ingest.enabled` on the read release. One set of pods serves both
+  paths.
+- **Separate (recommended when the ingest listener is widely reachable):** install a
+  second release of the chart with `ingest.enabled: true`, `ingest.only: true` and its
+  own `nameOverride`, and leave ingest disabled on the read release. An ingest-only
+  release has no read routes, read listeners, label store or read RBAC, so the pods
+  writers can reach hold no read access.
+
+```yaml
+# values for the ingest-only release
+nameOverride: lgtm-lbac-write
+ingest:
+  enabled: true
+  only: true
+  metrics: { url: http://otel-gateway-receiver.observability.svc:4320 }
+  logs:    { url: http://otel-gateway-receiver.observability.svc:4320 }
+  writers: { otlp-writer-app-a: app-a }
+  serverSecretName: lgtm-lbac-write-tls
+  serverCertificate:
+    enabled: true
+    dnsNames: ["otlp.example.com"]
+    issuerRef: { name: example-issuer }
+  loadBalancer:
+    enabled: true            # a LoadBalancer exposing only the ingest port
+auth:
+  jwksCertUrl: https://login.example.com/keys
+  claims: { groups: groups }
+  issuer: https://login.example.com/
+  audiences: ["api://lgtm"]
+```
+
+**Clients.** Any OTLP/HTTP exporter that can send a bearer token works: OTel SDKs,
+collectors (`bearertokenauth` / `oauth2client`), Alloy (`otelcol.auth.oauth2`). Tokens
+expire, so use a mechanism that refreshes them. For example, Claude Code / the Claude
+Agent SDK:
+
+```bash
+export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export OTEL_METRICS_EXPORTER=otlp OTEL_LOGS_EXPORTER=otlp
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+export OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=https://otlp.example.com/v1/metrics
+export OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=https://otlp.example.com/v1/logs
+# Prometheus-style backends store cumulative series; delta metrics may be dropped
+export OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative
+# plus "otelHeadersHelper" in settings.json printing {"Authorization": "Bearer <token>"}
+```
+
+Metrics on the metrics port:
+- `lgtm_lbac_proxy_ingest_requests_total{writer,signal,code}`
+- `lgtm_lbac_proxy_ingest_request_bytes_total{writer,signal}`
+- `lgtm_lbac_proxy_ingest_rejected_total{signal,reason}`, where reason is one of
+  `unauthenticated`, `no_role`, `ambiguous_role`, `too_large`, `upstream_error`
+
+The listener's HTTP metrics carry the `ingest_` prefix.
 
 ---
 

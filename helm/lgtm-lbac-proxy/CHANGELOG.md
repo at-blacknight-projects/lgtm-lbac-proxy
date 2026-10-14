@@ -5,6 +5,25 @@ All notable changes to the LGTM LBAC Proxy Helm chart will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`ingest` values** for the OTLP write gateway, off by default:
+  - **Base:** `ingest.enabled` renders the ingest config, container and ClusterIP ports,
+    and mounts `ingest.serverSecretName` at `/etc/secrets/ingest/`.
+  - **`ingest.serverCertificate`** optionally creates a cert-manager Certificate for it.
+  - **`ingest.loadBalancer`** adds a LoadBalancer Service exposing only the ingest port,
+    with optional `loadBalancerIP`, `externalTrafficPolicy` and annotations.
+  - **`ingest.only`** makes the release a write gateway alone. It drops the `http` and
+    `mtls` ports, the labels ConfigMap and mount, the client-cert mounts and Certificate,
+    the mTLS LoadBalancer, and the `cluster-monitoring-view` binding. Install it as a
+    second release with its own `nameOverride`.
+
+### Changed
+
+- With `ingest` disabled, the rendered output is unchanged.
+
 ## [1.12.5] - 2025-11-04
 
 ### Changed

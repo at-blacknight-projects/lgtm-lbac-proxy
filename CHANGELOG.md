@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **OTLP write gateway** (`ingest`, off by default). A separate TLS listener serving only
+  `POST /v1/{metrics,logs,traces}` (each when its upstream is set) and an
+  unauthenticated `GET /healthz`.
+  - **Identity:** JWT only. Client-certificate and trusted-header identity are not used.
+    `ingest.writers` maps a group to a writer id. Exactly one distinct id must match,
+    and the admin group is not a writer.
+  - **Forwarding:** the body is streamed to the upstream unchanged, with the writer id in
+    `ingest.writer_header` (default `X-Ingest-Writer`, e.g. `X-Scope-OrgID` for
+    multi-tenant backends), overwriting any client value. The caller's credentials are
+    removed, and the upstream's response is relayed.
+  - **Limits and errors:** `ingest.max_body_bytes` caps the body (413). An unreachable
+    upstream gives 502. Read, write and idle timeouts are bounded.
+  - **Metrics:** `lgtm_lbac_proxy_ingest_requests_total`,
+    `lgtm_lbac_proxy_ingest_request_bytes_total` and
+    `lgtm_lbac_proxy_ingest_rejected_total`. HTTP metrics use the `ingest_` prefix.
+  - **Trust:** the upstream must be reachable only through the gateway, since it trusts
+    the writer header.
+- **`ingest.only`:** run as a write gateway alone, with no label store, read upstreams,
+  read routes or read listeners.
+
+### Known Issues
+
+- Read upstream proxies are given `App.TlS`, which is never populated, so they use the
+  transport's default TLS settings rather than the configured CA pool and upstream
+  client certificates. Ingest upstreams use the root pool built by `WithTLSConfig`.
+
 ## [0.15.8] - 2025-11-04
 
 ### Fixed
