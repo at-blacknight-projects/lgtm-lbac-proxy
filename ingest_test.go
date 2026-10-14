@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -8,17 +10,20 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	metrics "github.com/slok/go-http-metrics/metrics/prometheus"
 	"github.com/slok/go-http-metrics/middleware"
 	"github.com/stretchr/testify/assert"
@@ -70,16 +75,15 @@ func TestIngestWriterEmptyGroupNeverMatches(t *testing.T) {
 func validIngestConfig() *Config {
 	return &Config{
 		Web:  WebConfig{ProxyPort: 8080, MetricsPort: 8081},
-		Auth: AuthConfig{ClientCert: ClientCertConfig{MTLSPort: 8443}},
+		Auth: AuthConfig{AuthHeader: "Authorization", ClientCert: ClientCertConfig{MTLSPort: 8443}},
 		Ingest: IngestConfig{
-			Enabled:         true,
-			Port:            8444,
-			ServerCert:      "/certs/tls.crt",
-			ServerKey:       "/certs/tls.key",
-			MaxBodyBytes:    defaultIngestMaxBodyBytes,
-			Metrics:         IngestSignalConfig{URL: "http://receiver.example.com:4318"},
-			Writers:         map[string]string{"otlp-writer-app-a": "app-a"},
-			StripAttributes: []string{"tenant", "hint.*"},
+			Enabled:      true,
+			Port:         8444,
+			ServerCert:   "/certs/tls.crt",
+			ServerKey:    "/certs/tls.key",
+			MaxBodyBytes: defaultIngestMaxBodyBytes,
+			Metrics:      IngestSignalConfig{URL: "http://receiver.example.com:4318"},
+			Writers:      map[string]string{"otlp-writer-app-a": "app-a"},
 		},
 	}
 }
@@ -107,13 +111,16 @@ func TestValidateIngestConfig(t *testing.T) {
 		{"uppercase id", func(c *Config) { c.Ingest.Writers = map[string]string{"g": "App-A"} }, "must match"},
 		{"slash in id", func(c *Config) { c.Ingest.Writers = map[string]string{"g": "a/b"} }, "must match"},
 		{"trailing hyphen id", func(c *Config) { c.Ingest.Writers = map[string]string{"g": "app-"} }, "must match"},
-		{"inner wildcard", func(c *Config) { c.Ingest.StripAttributes = []string{"a.*.b"} }, "trailing"},
-		{"bare wildcard", func(c *Config) { c.Ingest.StripAttributes = []string{".*"} }, "trailing"},
-		{"empty strip entry", func(c *Config) { c.Ingest.StripAttributes = []string{""} }, "empty pattern"},
-		{"tenant attribute dropped from metrics", func(c *Config) {
-			c.Ingest.TenantAttribute = "tenant"
-			c.Ingest.DropMetricAttributes = []string{"session.id", "tenant"}
-		}, "drop_metric_attributes"},
+		// An unset writer header falls back to the default rather than failing.
+		{"default writer header", func(c *Config) { c.Ingest.WriterHeader = "" }, ""},
+		{"tenant header as writer header", func(c *Config) { c.Ingest.WriterHeader = "X-Scope-OrgID" }, ""},
+		{"writer header with a space", func(c *Config) { c.Ingest.WriterHeader = "X Writer" }, "not a valid header name"},
+		{"writer header is Authorization", func(c *Config) { c.Ingest.WriterHeader = "authorization" }, "reserved"},
+		{"writer header is Content-Type", func(c *Config) { c.Ingest.WriterHeader = "Content-Type" }, "reserved"},
+		{"writer header is the auth header", func(c *Config) {
+			c.Auth.AuthHeader = "X-Auth-Token"
+			c.Ingest.WriterHeader = "x-auth-token"
+		}, "reserved"},
 	}
 
 	for _, tt := range tests {
@@ -195,19 +202,54 @@ func TestIngestDisabledBuildsNoRouter(t *testing.T) {
 	assert.Nil(t, app.w)
 }
 
-// ingestHandlerApp is a full test app (real JWT validation) with the write router built.
-func ingestHandlerApp(t *testing.T, writers map[string]string) (*App, map[string]string) {
+// receivedPush is what a fake OTLP receiver saw.
+type receivedPush struct {
+	path   string
+	header http.Header
+	body   []byte
+}
+
+// fakeReceiver is an OTLP/HTTP upstream that records each request and answers with
+// the given status and body.
+func fakeReceiver(t *testing.T, status int, respBody string) (*httptest.Server, chan receivedPush) {
+	t.Helper()
+	got := make(chan receivedPush, 8)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		got <- receivedPush{path: r.URL.Path, header: r.Header.Clone(), body: body}
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(respBody))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, got
+}
+
+// ingestHandlerApp is a full test app (real JWT validation) with the ingest proxies and
+// write router built, forwarding metrics and logs to upstreamURL.
+func ingestHandlerApp(t *testing.T, writers map[string]string, upstreamURL string, mutate ...func(*IngestConfig)) (*App, map[string]string) {
 	t.Helper()
 	app, tokens := setupTestMain()
 	app.healthy = true
 	app.Cfg.Ingest = IngestConfig{
-		Enabled: true,
-		Metrics: IngestSignalConfig{URL: "http://receiver.example.com:4318"},
-		Logs:    IngestSignalConfig{URL: "http://receiver.example.com:4318"},
-		Writers: writers,
+		Enabled:      true,
+		Metrics:      IngestSignalConfig{URL: upstreamURL},
+		Logs:         IngestSignalConfig{URL: upstreamURL},
+		Writers:      writers,
+		MaxBodyBytes: defaultIngestMaxBodyBytes,
 	}
+	for _, m := range mutate {
+		m(&app.Cfg.Ingest)
+	}
+	app.withIngestProxies()
 	app.WithIngest()
 	return &app, tokens
+}
+
+// okReceiverURL starts a receiver that accepts everything, for tests that only care
+// about the gateway's own decisions.
+func okReceiverURL(t *testing.T) string {
+	srv, _ := fakeReceiver(t, http.StatusOK, "")
+	return srv.URL
 }
 
 func serveIngest(app *App, req *http.Request) *httptest.ResponseRecorder {
@@ -217,7 +259,7 @@ func serveIngest(app *App, req *http.Request) *httptest.ResponseRecorder {
 }
 
 func TestIngestHandlerAuth(t *testing.T) {
-	app, tokens := ingestHandlerApp(t, map[string]string{"group1": "app-a"})
+	app, tokens := ingestHandlerApp(t, map[string]string{"group1": "app-a"}, okReceiverURL(t))
 
 	tests := []struct {
 		name     string
@@ -228,8 +270,7 @@ func TestIngestHandlerAuth(t *testing.T) {
 		{"no token", "", http.StatusForbidden, "no Authorization header found"},
 		{"invalid token", "not-a-jwt", http.StatusForbidden, "error parsing token"},
 		{"no writer group", tokens["noGroupsTenant"], http.StatusForbidden, errNoIngestRole.Error()},
-		// Authenticated and resolved: reaches the payload stage.
-		{"writer group", tokens["groupTenant"], http.StatusNotImplemented, "not implemented"},
+		{"writer group", tokens["groupTenant"], http.StatusOK, ""},
 	}
 
 	for _, tt := range tests {
@@ -246,7 +287,7 @@ func TestIngestHandlerAuth(t *testing.T) {
 }
 
 func TestIngestHandlerAmbiguousWriter(t *testing.T) {
-	app, tokens := ingestHandlerApp(t, map[string]string{"group1": "app-a", "group2": "app-b"})
+	app, tokens := ingestHandlerApp(t, map[string]string{"group1": "app-a", "group2": "app-b"}, okReceiverURL(t))
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/logs", nil)
 	req.Header.Set("Authorization", "Bearer "+tokens["groupsTenant"])
@@ -258,7 +299,7 @@ func TestIngestHandlerAmbiguousWriter(t *testing.T) {
 
 // Holding the admin group grants nothing on the write path.
 func TestIngestHandlerAdminIsNotAWriter(t *testing.T) {
-	app, tokens := ingestHandlerApp(t, map[string]string{"group1": "app-a"})
+	app, tokens := ingestHandlerApp(t, map[string]string{"group1": "app-a"}, okReceiverURL(t))
 	app.Cfg.Admin = AdminConfig{Bypass: true, Group: "admins"}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/metrics", nil)
@@ -271,7 +312,7 @@ func TestIngestHandlerAdminIsNotAWriter(t *testing.T) {
 // The write path is JWT-only: a trusted CN header must not stand in for a token, even
 // with trusted-header identity enabled for the read path.
 func TestIngestHandlerIgnoresTrustedClientHeader(t *testing.T) {
-	app, _ := ingestHandlerApp(t, map[string]string{"svc-writer": "app-a"})
+	app, _ := ingestHandlerApp(t, map[string]string{"svc-writer": "app-a"}, okReceiverURL(t))
 	app.Cfg.Auth.TrustedClientHeader = TrustedClientHeaderConfig{Enabled: true, CNHeader: "X-Client-CN"}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/metrics", nil)
@@ -282,7 +323,7 @@ func TestIngestHandlerIgnoresTrustedClientHeader(t *testing.T) {
 }
 
 func TestIngestRouterRefusesEverythingElse(t *testing.T) {
-	app, tokens := ingestHandlerApp(t, map[string]string{"group1": "app-a"})
+	app, tokens := ingestHandlerApp(t, map[string]string{"group1": "app-a"}, okReceiverURL(t))
 
 	tests := []struct {
 		name     string
@@ -308,7 +349,7 @@ func TestIngestRouterRefusesEverythingElse(t *testing.T) {
 }
 
 func TestIngestHealthzReflectsHealth(t *testing.T) {
-	app, _ := ingestHandlerApp(t, map[string]string{"group1": "app-a"})
+	app, _ := ingestHandlerApp(t, map[string]string{"group1": "app-a"}, okReceiverURL(t))
 	app.healthy = false
 
 	rec := serveIngest(app, httptest.NewRequest(http.MethodGet, "/healthz", nil))
@@ -359,7 +400,7 @@ func TestBuildIngestServer(t *testing.T) {
 
 // End to end over a real TLS listener: the probe answers, a read route does not.
 func TestIngestServerOverTLS(t *testing.T) {
-	app, _ := ingestHandlerApp(t, map[string]string{"group1": "app-a"})
+	app, _ := ingestHandlerApp(t, map[string]string{"group1": "app-a"}, okReceiverURL(t))
 	app.Cfg.Ingest.ServerCert, app.Cfg.Ingest.ServerKey = writeTestKeyPair(t, t.TempDir())
 
 	srv, err := app.buildIngestServer("127.0.0.1:0", app.w)
@@ -412,4 +453,218 @@ func TestIngestHTTPMetricsCoexistWithReadMetrics(t *testing.T) {
 		})
 		ingestHTTPMetrics(reg)
 	})
+}
+
+// counterValue reads a counter's current value.
+func counterValue(c prometheus.Counter) float64 {
+	m := &dto.Metric{}
+	_ = c.Write(m)
+	return m.GetCounter().GetValue()
+}
+
+func gzipped(t *testing.T, b []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	_, err := zw.Write(b)
+	require.NoError(t, err)
+	require.NoError(t, zw.Close())
+	return buf.Bytes()
+}
+
+func receive(t *testing.T, got chan receivedPush) receivedPush {
+	t.Helper()
+	select {
+	case p := <-got:
+		return p
+	case <-time.After(5 * time.Second):
+		t.Fatal("upstream received nothing")
+		return receivedPush{}
+	}
+}
+
+// The body reaches the upstream untouched, whatever its encoding, with the writer id in
+// the writer header and none of the caller's credentials.
+func TestIngestForwardsBodyUnchanged(t *testing.T) {
+	protobuf := []byte{0x0a, 0x03, 0x01, 0x02, 0x03, 0x00, 0xff}
+	tests := []struct {
+		name        string
+		contentType string
+		encoding    string
+		body        []byte
+	}{
+		{"protobuf", "application/x-protobuf", "", protobuf},
+		{"json", "application/json", "", []byte(`{"resourceMetrics":[]}`)},
+		{"gzip protobuf", "application/x-protobuf", "gzip", gzipped(t, protobuf)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, got := fakeReceiver(t, http.StatusOK, "")
+			app, tokens := ingestHandlerApp(t, map[string]string{"group1": "app-a"}, srv.URL)
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/metrics", bytes.NewReader(tt.body))
+			req.Header.Set("Authorization", "Bearer "+tokens["groupTenant"])
+			req.Header.Set("Content-Type", tt.contentType)
+			if tt.encoding != "" {
+				req.Header.Set("Content-Encoding", tt.encoding)
+			}
+			rec := serveIngest(app, req)
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			p := receive(t, got)
+			assert.Equal(t, "/v1/metrics", p.path)
+			assert.Equal(t, tt.body, p.body, "body must be forwarded byte for byte")
+			assert.Equal(t, tt.contentType, p.header.Get("Content-Type"))
+			assert.Equal(t, tt.encoding, p.header.Get("Content-Encoding"))
+			assert.Equal(t, []string{"app-a"}, p.header.Values(defaultIngestWriterHeader))
+			assert.Empty(t, p.header.Get("Authorization"), "the caller's token must not reach the upstream")
+		})
+	}
+}
+
+// A writer header supplied by the caller is replaced, never passed through or appended
+// to: it is the one assertion the upstream trusts.
+func TestIngestOverwritesClientWriterHeader(t *testing.T) {
+	srv, got := fakeReceiver(t, http.StatusOK, "")
+	app, tokens := ingestHandlerApp(t, map[string]string{"group1": "app-a"}, srv.URL)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/logs", strings.NewReader("x"))
+	req.Header.Set("Authorization", "Bearer "+tokens["groupTenant"])
+	req.Header.Add("x-ingest-writer", "app-b")
+	req.Header.Add("X-INGEST-WRITER", "app-c")
+	rec := serveIngest(app, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	assert.Equal(t, []string{"app-a"}, receive(t, got).header.Values(defaultIngestWriterHeader))
+}
+
+// For a multi-tenant backend the writer header can be its own tenant header.
+func TestIngestCustomWriterHeader(t *testing.T) {
+	srv, got := fakeReceiver(t, http.StatusOK, "")
+	app, tokens := ingestHandlerApp(t, map[string]string{"group1": "app-a"}, srv.URL,
+		func(c *IngestConfig) { c.WriterHeader = "X-Scope-OrgID" })
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/metrics", strings.NewReader("x"))
+	req.Header.Set("Authorization", "Bearer "+tokens["groupTenant"])
+	req.Header.Set("X-Scope-OrgID", "someone-else")
+	rec := serveIngest(app, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	p := receive(t, got)
+	assert.Equal(t, []string{"app-a"}, p.header.Values("X-Scope-OrgID"))
+	assert.Empty(t, p.header.Get(defaultIngestWriterHeader))
+}
+
+// An upstream mounted under a prefix keeps it, and each signal goes to its own upstream.
+func TestIngestUpstreamBasePathAndPerSignalUpstreams(t *testing.T) {
+	metricsSrv, metricsGot := fakeReceiver(t, http.StatusOK, "")
+	tracesSrv, tracesGot := fakeReceiver(t, http.StatusOK, "")
+	app, tokens := ingestHandlerApp(t, map[string]string{"group1": "app-a"}, metricsSrv.URL+"/otlp",
+		func(c *IngestConfig) { c.Traces.URL = tracesSrv.URL })
+
+	for _, path := range []string{"/v1/metrics", "/v1/traces"} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader("x"))
+		req.Header.Set("Authorization", "Bearer "+tokens["groupTenant"])
+		require.Equal(t, http.StatusOK, serveIngest(app, req).Code)
+	}
+
+	assert.Equal(t, "/otlp/v1/metrics", receive(t, metricsGot).path)
+	assert.Equal(t, "/v1/traces", receive(t, tracesGot).path)
+}
+
+// The upstream's answer is the client's answer, including partial-success and
+// throttling responses the client's exporter acts on.
+func TestIngestRelaysUpstreamResponse(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusBadRequest, http.StatusServiceUnavailable} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			srv, _ := fakeReceiver(t, status, "upstream says hi")
+			app, tokens := ingestHandlerApp(t, map[string]string{"group1": "app-a"}, srv.URL)
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/metrics", strings.NewReader("x"))
+			req.Header.Set("Authorization", "Bearer "+tokens["groupTenant"])
+			rec := serveIngest(app, req)
+
+			assert.Equal(t, status, rec.Code)
+			assert.Equal(t, "upstream says hi", rec.Body.String())
+		})
+	}
+}
+
+func TestIngestUnreachableUpstream(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	url := srv.URL
+	srv.Close()
+	app, tokens := ingestHandlerApp(t, map[string]string{"group1": "app-a"}, url)
+	before := counterValue(ingestRejected.WithLabelValues(signalMetrics, rejectUpstreamError))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/metrics", strings.NewReader("x"))
+	req.Header.Set("Authorization", "Bearer "+tokens["groupTenant"])
+	rec := serveIngest(app, req)
+
+	assert.Equal(t, http.StatusBadGateway, rec.Code)
+	assert.Equal(t, before+1, counterValue(ingestRejected.WithLabelValues(signalMetrics, rejectUpstreamError)))
+}
+
+func TestIngestBodySizeCap(t *testing.T) {
+	const limit = 16
+	big := bytes.Repeat([]byte("a"), limit+1)
+
+	t.Run("declared length over the cap is refused before forwarding", func(t *testing.T) {
+		srv, got := fakeReceiver(t, http.StatusOK, "")
+		app, tokens := ingestHandlerApp(t, map[string]string{"group1": "app-a"}, srv.URL,
+			func(c *IngestConfig) { c.MaxBodyBytes = limit })
+
+		req := httptest.NewRequest(http.MethodPost, "/v1/metrics", bytes.NewReader(big))
+		req.Header.Set("Authorization", "Bearer "+tokens["groupTenant"])
+		rec := serveIngest(app, req)
+
+		assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+		assert.Empty(t, got, "nothing should reach the upstream")
+	})
+
+	t.Run("undeclared length overrunning the cap is cut off", func(t *testing.T) {
+		app, tokens := ingestHandlerApp(t, map[string]string{"group1": "app-a"}, okReceiverURL(t),
+			func(c *IngestConfig) { c.MaxBodyBytes = limit })
+
+		req := httptest.NewRequest(http.MethodPost, "/v1/metrics", io.NopCloser(bytes.NewReader(big)))
+		req.ContentLength = -1
+		req.Header.Set("Authorization", "Bearer "+tokens["groupTenant"])
+		rec := serveIngest(app, req)
+
+		assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+	})
+
+	t.Run("at the cap is accepted", func(t *testing.T) {
+		app, tokens := ingestHandlerApp(t, map[string]string{"group1": "app-a"}, okReceiverURL(t),
+			func(c *IngestConfig) { c.MaxBodyBytes = limit })
+
+		req := httptest.NewRequest(http.MethodPost, "/v1/metrics", bytes.NewReader(big[:limit]))
+		req.Header.Set("Authorization", "Bearer "+tokens["groupTenant"])
+		assert.Equal(t, http.StatusOK, serveIngest(app, req).Code)
+	})
+}
+
+func TestIngestMetrics(t *testing.T) {
+	app, tokens := ingestHandlerApp(t, map[string]string{"group1": "app-a"}, okReceiverURL(t))
+	forwarded := ingestRequests.WithLabelValues("app-a", signalLogs, "200")
+	bytesRead := ingestRequestBytes.WithLabelValues("app-a", signalLogs)
+	noRole := ingestRejected.WithLabelValues(signalLogs, rejectNoRole)
+	unauth := ingestRejected.WithLabelValues(signalLogs, rejectUnauthenticated)
+	f0, b0, n0, u0 := counterValue(forwarded), counterValue(bytesRead), counterValue(noRole), counterValue(unauth)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/logs", strings.NewReader("12345"))
+	req.Header.Set("Authorization", "Bearer "+tokens["groupTenant"])
+	serveIngest(app, req)
+
+	req = httptest.NewRequest(http.MethodPost, "/v1/logs", nil)
+	req.Header.Set("Authorization", "Bearer "+tokens["noGroupsTenant"])
+	serveIngest(app, req)
+
+	serveIngest(app, httptest.NewRequest(http.MethodPost, "/v1/logs", nil))
+
+	assert.Equal(t, f0+1, counterValue(forwarded))
+	assert.Equal(t, b0+5, counterValue(bytesRead))
+	assert.Equal(t, n0+1, counterValue(noRole))
+	assert.Equal(t, u0+1, counterValue(unauth))
 }

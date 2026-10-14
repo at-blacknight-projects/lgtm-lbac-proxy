@@ -1,17 +1,22 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rs/zerolog/log"
 	metrics "github.com/slok/go-http-metrics/metrics/prometheus"
 	"github.com/slok/go-http-metrics/middleware"
@@ -26,7 +31,10 @@ const (
 
 var ingestSignals = []string{signalMetrics, signalLogs, signalTraces}
 
-const defaultIngestMaxBodyBytes = 5 << 20
+const (
+	defaultIngestMaxBodyBytes = 5 << 20
+	defaultIngestWriterHeader = "X-Ingest-Writer"
+)
 
 // The write listener is the one most likely to face untrusted networks, so unlike the
 // read listeners it does not run with net/http's unbounded zero-value timeouts.
@@ -37,13 +45,48 @@ const (
 	ingestIdleTimeout       = 120 * time.Second
 )
 
-// writerIDPattern keeps writer ids usable as a label value and a path-like tenant
-// suffix: lowercase alphanumerics and inner hyphens, at most 63 characters.
+// writerIDPattern keeps writer ids usable as a header value, a label value and a
+// path-like tenant suffix: lowercase alphanumerics and inner hyphens, at most 63
+// characters.
 var writerIDPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// headerTokenPattern is an RFC 9110 field-name token.
+var headerTokenPattern = regexp.MustCompile("^[!#$%&'*+\\-.^_`|~0-9A-Za-z]+$")
+
+// reservedWriterHeaders may not carry the writer id: they carry credentials, framing or
+// content metadata the gateway forwards or strips on its own terms.
+var reservedWriterHeaders = []string{
+	"Authorization", "Host", "Connection", "Transfer-Encoding",
+	"Content-Type", "Content-Encoding", "Content-Length",
+}
 
 var (
 	errNoIngestRole        = errors.New("no ingest role")
 	errAmbiguousIngestRole = errors.New("ambiguous ingest roles")
+)
+
+// Rejection reasons, as the reason label of lgtm_lbac_proxy_ingest_rejected_total.
+const (
+	rejectUnauthenticated = "unauthenticated"
+	rejectNoRole          = "no_role"
+	rejectAmbiguousRole   = "ambiguous_role"
+	rejectTooLarge        = "too_large"
+	rejectUpstreamError   = "upstream_error"
+)
+
+var (
+	ingestRequests = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "lgtm_lbac_proxy_ingest_requests_total",
+		Help: "Authorised OTLP pushes forwarded upstream, by writer, signal and response code.",
+	}, []string{"writer", "signal", "code"})
+	ingestRequestBytes = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "lgtm_lbac_proxy_ingest_request_bytes_total",
+		Help: "Request body bytes read from authorised OTLP pushes, as sent (before any decompression).",
+	}, []string{"writer", "signal"})
+	ingestRejected = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "lgtm_lbac_proxy_ingest_rejected_total",
+		Help: "OTLP pushes refused by the gateway, by signal and reason.",
+	}, []string{"signal", "reason"})
 )
 
 // signalURL returns the configured upstream URL for signal, or "" when it is not routed.
@@ -57,6 +100,27 @@ func (c IngestConfig) signalURL(signal string) string {
 		return c.Traces.URL
 	}
 	return ""
+}
+
+// signalProxy returns the per-upstream proxy settings for signal.
+func (c IngestConfig) signalProxy(signal string) *ProxyConfig {
+	switch signal {
+	case signalMetrics:
+		return c.Metrics.Proxy
+	case signalLogs:
+		return c.Logs.Proxy
+	case signalTraces:
+		return c.Traces.Proxy
+	}
+	return nil
+}
+
+// writerHeader returns the configured writer header, or the default.
+func (c IngestConfig) writerHeader() string {
+	if c.WriterHeader == "" {
+		return defaultIngestWriterHeader
+	}
+	return c.WriterHeader
 }
 
 // validateIngestConfig reports the first problem with the ingest section, or nil when
@@ -90,6 +154,9 @@ func validateIngestConfig(c *Config) error {
 	if in.MaxBodyBytes <= 0 {
 		return fmt.Errorf("ingest.max_body_bytes must be positive, got %d", in.MaxBodyBytes)
 	}
+	if err := validateWriterHeader(in.writerHeader(), c.Auth.AuthHeader); err != nil {
+		return fmt.Errorf("ingest.writer_header: %w", err)
+	}
 
 	routed := 0
 	for _, signal := range ingestSignals {
@@ -121,33 +188,23 @@ func validateIngestConfig(c *Config) error {
 			return fmt.Errorf("ingest.writers[%s] id %q must match %s", group, id, writerIDPattern)
 		}
 	}
-
-	for _, attr := range in.StripAttributes {
-		if err := validateAttributePattern(attr); err != nil {
-			return fmt.Errorf("ingest.strip_attributes: %w", err)
-		}
-	}
-	if in.TenantAttribute != "" {
-		for _, attr := range in.DropMetricAttributes {
-			if attr == in.TenantAttribute {
-				return fmt.Errorf("ingest.tenant_attribute %q is also in drop_metric_attributes", attr)
-			}
-		}
-	}
 	return nil
 }
 
-// validateAttributePattern accepts an exact attribute key, or a prefix ending in ".*".
-func validateAttributePattern(p string) error {
-	if strings.TrimSpace(p) == "" {
-		return errors.New("empty pattern")
+// validateWriterHeader accepts a header field name that does not collide with one the
+// gateway manages, including the header callers authenticate with.
+func validateWriterHeader(name, authHeader string) error {
+	if !headerTokenPattern.MatchString(name) {
+		return fmt.Errorf("%q is not a valid header name", name)
 	}
-	if !strings.Contains(p, "*") {
-		return nil
+	reserved := reservedWriterHeaders
+	if authHeader != "" {
+		reserved = append(append([]string{}, reserved...), authHeader)
 	}
-	prefix, ok := strings.CutSuffix(p, ".*")
-	if !ok || prefix == "" || strings.Contains(prefix, "*") {
-		return fmt.Errorf("pattern %q: a wildcard is only allowed as a trailing \".*\"", p)
+	for _, r := range reserved {
+		if strings.EqualFold(name, r) {
+			return fmt.Errorf("%q is reserved", name)
+		}
 	}
 	return nil
 }
@@ -172,6 +229,41 @@ func ingestWriter(token OAuthToken, cfg IngestConfig) (string, error) {
 		return "", errNoIngestRole
 	}
 	return writer, nil
+}
+
+// withIngestProxies creates one reverse proxy per routed signal. Called from
+// WithProxies.
+//
+// The transport trusts the root pool WithTLSConfig built, rather than a.TlS, which the
+// read upstreams are given but which is never populated.
+func (a *App) withIngestProxies() {
+	if !a.Cfg.Ingest.Enabled {
+		return
+	}
+	a.ingestProxies = map[string]*httputil.ReverseProxy{}
+	for _, signal := range ingestSignals {
+		target := a.Cfg.Ingest.signalURL(signal)
+		if target == "" {
+			continue
+		}
+		proxyCfg := a.Cfg.GetProxyConfig(a.Cfg.Ingest.signalProxy(signal))
+		proxy := a.createProxy(target, "", a.createTransport(proxyCfg, a.ingestTLSConfig()), "ingest-"+signal)
+		proxy.ErrorHandler = ingestErrorHandler(signal)
+		a.ingestProxies[signal] = proxy
+		log.Info().Str("signal", signal).Str("url", target).Msg("Ingest proxy initialized")
+	}
+}
+
+// ingestTLSConfig is the client TLS configuration for https ingest upstreams.
+func (a *App) ingestTLSConfig() *tls.Config {
+	if a.rootCAs == nil {
+		return nil
+	}
+	return &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		RootCAs:            a.rootCAs,
+		InsecureSkipVerify: a.Cfg.Web.TLSVerifySkip,
+	}
 }
 
 // WithIngest builds the write router, and returns the updated App. It is separate from
@@ -209,27 +301,129 @@ func (a *App) WithIngest() *App {
 	return a
 }
 
-// ingestHandler authenticates a push and resolves the writer it is made as.
+// ingestHandler authenticates a push, resolves the writer it is made as, and forwards
+// it with the writer id in the writer header.
 //
 // Identity comes from getToken, not getIdentity: the client-certificate and trusted
 // header modes trust their source implicitly, which is not acceptable on a listener
 // meant to be reachable by untrusted clients.
+//
+// The body is streamed through unread and unmodified. The only assertion the gateway
+// adds is the writer header, which it overwrites, so it is only as trustworthy as the
+// guarantee that the upstream cannot be reached except through the gateway.
 func ingestHandler(signal string, a *App) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token, err := getToken(r, a)
 		if err != nil {
+			ingestRejected.WithLabelValues(signal, rejectUnauthenticated).Inc()
 			logAndWriteError(w, http.StatusForbidden, err, "")
 			return
 		}
 		writer, err := ingestWriter(token, a.Cfg.Ingest)
 		if err != nil {
+			reason := rejectNoRole
+			if errors.Is(err, errAmbiguousIngestRole) {
+				reason = rejectAmbiguousRole
+			}
+			ingestRejected.WithLabelValues(signal, reason).Inc()
 			log.Debug().Str("user", token.PreferredUsername).Err(err).Msg("Ingest refused")
 			logAndWriteError(w, http.StatusForbidden, err, "")
 			return
 		}
-		log.Debug().Str("writer", writer).Str("signal", signal).Msg("Ingest accepted")
-		logAndWriteError(w, http.StatusNotImplemented, fmt.Errorf("%s ingest not implemented", signal), "")
+
+		in := a.Cfg.Ingest
+		if r.ContentLength > in.MaxBodyBytes {
+			ingestRejected.WithLabelValues(signal, rejectTooLarge).Inc()
+			logAndWriteError(w, http.StatusRequestEntityTooLarge, fmt.Errorf("request body exceeds %d bytes", in.MaxBodyBytes), "")
+			return
+		}
+
+		proxy := a.ingestProxies[signal]
+		if proxy == nil {
+			ingestRejected.WithLabelValues(signal, rejectUpstreamError).Inc()
+			logAndWriteError(w, http.StatusBadGateway, fmt.Errorf("no upstream for %s", signal), "")
+			return
+		}
+
+		body := &ingestBody{ReadCloser: http.MaxBytesReader(w, r.Body, in.MaxBodyBytes)}
+		r = r.WithContext(context.WithValue(r.Context(), ingestBodyKey{}, body))
+		r.Body = body
+
+		header := in.writerHeader()
+		r.Header.Del(header)
+		r.Header.Set(header, writer)
+		// The caller's credentials are for the gateway, not the upstream.
+		r.Header.Del("Authorization")
+		if a.Cfg.Auth.AuthHeader != "" {
+			r.Header.Del(a.Cfg.Auth.AuthHeader)
+		}
+		if a.Cfg.Alert.TokenHeader != "" {
+			r.Header.Del(a.Cfg.Alert.TokenHeader)
+		}
+
+		log.Debug().Str("writer", writer).Str("signal", signal).Msg("Forwarding ingest")
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		proxy.ServeHTTP(rec, r)
+
+		ingestRequests.WithLabelValues(writer, signal, strconv.Itoa(rec.status)).Inc()
+		ingestRequestBytes.WithLabelValues(writer, signal).Add(float64(body.n))
 	}
+}
+
+// ingestBodyKey carries the request's ingestBody to the proxy's error handler.
+type ingestBodyKey struct{}
+
+// ingestBody counts the bytes read from a push and records whether the size cap cut
+// it off, so a failed forward can be told apart from an oversized one.
+type ingestBody struct {
+	io.ReadCloser
+	n        int64
+	tooLarge bool
+}
+
+func (b *ingestBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	b.n += int64(n)
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		b.tooLarge = true
+	}
+	return n, err
+}
+
+// ingestErrorHandler answers a failed forward: 413 when the body overran the size cap
+// mid-stream, 502 for anything else.
+func ingestErrorHandler(signal string) func(http.ResponseWriter, *http.Request, error) {
+	return func(w http.ResponseWriter, r *http.Request, err error) {
+		if body, ok := r.Context().Value(ingestBodyKey{}).(*ingestBody); ok && body.tooLarge {
+			ingestRejected.WithLabelValues(signal, rejectTooLarge).Inc()
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		ingestRejected.WithLabelValues(signal, rejectUpstreamError).Inc()
+		log.Error().Err(err).Str("upstream", "ingest-"+signal).Msg("Proxy error")
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+	}
+}
+
+// statusRecorder captures the response status for metrics.
+type statusRecorder struct {
+	http.ResponseWriter
+	status      int
+	wroteHeader bool
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	if !s.wroteHeader {
+		s.status = code
+		s.wroteHeader = true
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer (flush, deadlines).
+func (s *statusRecorder) Unwrap() http.ResponseWriter {
+	return s.ResponseWriter
 }
 
 // buildIngestServer constructs the write listener: TLS with the ingest server

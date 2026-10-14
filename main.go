@@ -33,6 +33,8 @@ type App struct {
 	thanosProxy         *httputil.ReverseProxy
 	tempoProxy          *httputil.ReverseProxy
 	alertmanagerProxy   *httputil.ReverseProxy
+	ingestProxies       map[string]*httputil.ReverseProxy // by OTLP signal
+	rootCAs             *x509.CertPool                    // trust pool built by WithTLSConfig
 	i                   *mux.Router
 	e                   *mux.Router
 	w                   *mux.Router // write (ingest) router, served only on the ingest listener
@@ -234,6 +236,8 @@ func (a *App) WithProxies() *App {
 			Int("max_idle_conns_per_host", proxyCfg.MaxIdleConnsPerHost).
 			Msg("Alertmanager proxy initialized")
 	}
+
+	a.withIngestProxies()
 
 	return a
 }

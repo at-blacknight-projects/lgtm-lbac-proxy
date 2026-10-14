@@ -202,20 +202,25 @@ type AlertingConfig struct {
 // not consulted.
 //
 // Writers maps a group (as carried in the configured groups claim) to the writer id
-// the caller pushes as. The id replaces the OTLP resource service.name, and is
-// optionally stamped as a tenant attribute (TenantAttribute). Groups are matched
-// case-insensitively; viper lowercases map keys. The admin group does not imply write
-// access: every writer must be named explicitly.
+// the caller pushes as. The gateway does not read or modify the payload: it forwards
+// the body unchanged and sends the writer id in WriterHeader, overwriting any value the
+// client supplied. The upstream derives tenancy from that header, so it must be
+// reachable only through the gateway. Groups are matched case-insensitively; viper
+// lowercases map keys. The admin group does not imply write access: every writer must
+// be named explicitly.
 //
-// Changes to Enabled, Port and the server certificate take effect on restart; writers
-// and the attribute lists are read per request and follow config reloads.
+// Changes to Enabled, Port, the server certificate and the upstream URLs take effect on
+// restart; writers and the header name are read per request and follow config reloads.
 type IngestConfig struct {
 	Enabled      bool              `mapstructure:"enabled"`
 	Port         int               `mapstructure:"port"`
 	ServerCert   string            `mapstructure:"server_cert"`
 	ServerKey    string            `mapstructure:"server_key"`
 	Writers      map[string]string `mapstructure:"writers"`        // group -> writer id
-	MaxBodyBytes int64             `mapstructure:"max_body_bytes"` // cap on compressed AND decompressed body
+	MaxBodyBytes int64             `mapstructure:"max_body_bytes"` // cap on the request body as sent (decompression is the upstream's to bound)
+	// WriterHeader is the request header the upstream receives the writer id in. For a
+	// multi-tenant backend this can be its tenant header, for example X-Scope-OrgID.
+	WriterHeader string `mapstructure:"writer_header"`
 
 	// Per-signal OTLP/HTTP upstreams. A signal with no URL is not routed. The request
 	// path (/v1/metrics, /v1/logs, /v1/traces) is appended to the URL's base path, so a
@@ -224,22 +229,6 @@ type IngestConfig struct {
 	Metrics IngestSignalConfig `mapstructure:"metrics"`
 	Logs    IngestSignalConfig `mapstructure:"logs"`
 	Traces  IngestSignalConfig `mapstructure:"traces"`
-
-	// StripAttributes are removed from every attribute map in a payload (resource,
-	// scope, datapoint, log record, span, span event, span link). An entry ending in
-	// ".*" matches by prefix. List the keys the upstream derives tenancy or labels
-	// from, so a sender cannot set them.
-	StripAttributes []string `mapstructure:"strip_attributes"`
-	// TenantAttribute, when set, is upserted on every resource as TenantPrefix+<writer
-	// id>, after StripAttributes has run and with any sender-supplied value removed.
-	// Use it when the upstream stores the payload as-is and reads enforce on that
-	// resource attribute; leave it unset when the receiver derives tenancy from
-	// service.name itself.
-	TenantAttribute string `mapstructure:"tenant_attribute"`
-	TenantPrefix    string `mapstructure:"tenant_prefix"`
-	// DropMetricAttributes are removed from metric datapoints only, typically
-	// per-session or per-account identifiers that would otherwise become series labels.
-	DropMetricAttributes []string `mapstructure:"drop_metric_attributes"`
 }
 
 // IngestSignalConfig is the upstream for one OTLP signal.
@@ -292,6 +281,7 @@ func (a *App) WithConfig() *App {
 	// "" for a standalone Alertmanager, which serves it at the root.
 	v.SetDefault("alertmanager::path_prefix", "/alertmanager")
 	v.SetDefault("ingest::max_body_bytes", defaultIngestMaxBodyBytes)
+	v.SetDefault("ingest::writer_header", defaultIngestWriterHeader)
 
 	err := v.MergeInConfig()
 	if err != nil {
@@ -418,6 +408,8 @@ func (a *App) WithTLSConfig() *App {
 		log.Debug().Str("path", a.Cfg.Tempo.Cert).Msg("Adding Tempo certificate")
 		certificates = append(certificates, tempoCert)
 	}
+
+	a.rootCAs = rootCAs
 
 	config := &tls.Config{
 		InsecureSkipVerify: a.Cfg.Web.TLSVerifySkip,
