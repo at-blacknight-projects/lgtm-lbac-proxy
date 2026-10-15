@@ -104,6 +104,10 @@ ingest:
   traces:
     url: ""
   writers: {}                   # e.g. { otlp-writer-app-a: app-a }
+  # Static WRITE keys (off when empty): SHA-256 hex of a long-lived key -> writer id,
+  # for exporters that can only send fixed headers. Separate from auth.staticKeys: a
+  # write key never reads. Configure HASHES only (see auth.staticKeys).
+  staticKeys: {}                # e.g. { "<sha256-hex>": app-b }
   writerHeader: X-Ingest-Writer
   maxBodyBytes: 5242880         # cap on the body as sent; the receiver bounds decompression
   # Secret (tls.crt/tls.key) with the listener's server cert, mounted at /etc/secrets/ingest/.
@@ -146,6 +150,13 @@ auth:
   # — set these so a token minted for a different resource can't be replayed here.
   issuer: ""        # e.g. https://sts.windows.net/<tenant-id>/
   audiences: []     # e.g. ["api://<app-id>", "<app-id-guid>"]
+  # Static READ keys (off when empty): SHA-256 hex of a long-lived key -> an identity
+  # whose `labels` entry scopes what it may read. For callers with no signed-in user,
+  # e.g. a Grafana data source behind publicly shared dashboards. The identity has no
+  # groups (never admin) and is refused a '#cluster-wide' policy. Configure HASHES only:
+  #   KEY=$(openssl rand -base64 32); printf %s "$KEY" | sha256sum
+  # Several hashes may map to one identity, so a key rotates without downtime.
+  staticKeys: {}    # e.g. { "<sha256-hex>": public-viewer }
   # Common OAuth Provider Examples:
   # Keycloak: username=preferred_username, email=email, groups=groups
   # Azure AD: username=unique_name, email=upn, groups=roles

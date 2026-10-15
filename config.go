@@ -83,6 +83,9 @@ type AuthConfig struct {
 	Audiences []string `mapstructure:"audiences"`
 	// Issuer, when set, is the exact `iss` the token must carry. Empty disables the check.
 	Issuer string `mapstructure:"issuer"`
+	// StaticKeys maps the SHA-256 (hex) of a long-lived key to an identity whose
+	// labels.yaml entry scopes what it may read. Off when empty. See statickeys.go.
+	StaticKeys map[string]string `mapstructure:"static_keys"`
 }
 
 type WebConfig struct {
@@ -222,6 +225,7 @@ type IngestConfig struct {
 	ServerCert   string            `mapstructure:"server_cert"`
 	ServerKey    string            `mapstructure:"server_key"`
 	Writers      map[string]string `mapstructure:"writers"`        // group -> writer id
+	StaticKeys   map[string]string `mapstructure:"static_keys"`    // SHA-256 hex of a long-lived key -> writer id; for exporters that only send fixed headers
 	MaxBodyBytes int64             `mapstructure:"max_body_bytes"` // cap on the request body as sent (decompression is the upstream's to bound)
 	// WriterHeader is the request header the upstream receives the writer id in. For a
 	// multi-tenant backend this can be its tenant header, for example X-Scope-OrgID.
@@ -310,6 +314,9 @@ func (a *App) WithConfig() *App {
 	if err := validateIngestConfig(a.Cfg); err != nil {
 		log.Fatal().Err(err).Msg("Invalid ingest configuration")
 	}
+	if err := validateAuthStaticKeys(a.Cfg); err != nil {
+		log.Fatal().Err(err).Msg("Invalid static key configuration")
+	}
 	v.OnConfigChange(func(e fsnotify.Event) {
 		log.Info().Str("file", e.Name).Msg("Config file changed")
 		err := v.Unmarshal(a.Cfg)
@@ -327,6 +334,10 @@ func (a *App) WithConfig() *App {
 		a.validateTempoConfig()
 		if err := validateIngestConfig(a.Cfg); err != nil {
 			log.Error().Err(err).Msg("Invalid ingest configuration")
+			a.healthy = false
+		}
+		if err := validateAuthStaticKeys(a.Cfg); err != nil {
+			log.Error().Err(err).Msg("Invalid static key configuration")
 			a.healthy = false
 		}
 		zerolog.SetGlobalLevel(zerolog.Level(a.Cfg.Log.Level))

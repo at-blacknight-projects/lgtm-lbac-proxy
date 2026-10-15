@@ -185,8 +185,16 @@ func validateIngestConfig(c *Config) error {
 		return errors.New("ingest needs at least one of metrics.url, logs.url, traces.url")
 	}
 
-	if len(in.Writers) == 0 {
-		return errors.New("ingest.writers is empty: no caller could push")
+	if len(in.Writers) == 0 && len(in.StaticKeys) == 0 {
+		return errors.New("ingest.writers and ingest.static_keys are both empty: no caller could push")
+	}
+	if err := validateStaticKeys("ingest.static_keys", in.StaticKeys, func(id string) error {
+		if !writerIDPattern.MatchString(id) {
+			return fmt.Errorf("writer id %q must match %s", id, writerIDPattern)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	for group, id := range in.Writers {
 		if strings.TrimSpace(group) == "" {
@@ -321,22 +329,27 @@ func (a *App) WithIngest() *App {
 // guarantee that the upstream cannot be reached except through the gateway.
 func ingestHandler(signal string, a *App) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		token, err := getToken(r, a)
-		if err != nil {
-			ingestRejected.WithLabelValues(signal, rejectUnauthenticated).Inc()
-			logAndWriteError(w, http.StatusForbidden, err, "")
-			return
-		}
-		writer, err := ingestWriter(token, a.Cfg.Ingest)
-		if err != nil {
-			reason := rejectNoRole
-			if errors.Is(err, errAmbiguousIngestRole) {
-				reason = rejectAmbiguousRole
+		// A static write key maps straight to its writer. Anything else must be a JWT
+		// whose groups resolve to exactly one writer.
+		writer, viaKey := staticKeyLookup(a.Cfg.Ingest.StaticKeys, bearerValue(r, a))
+		if !viaKey {
+			token, err := getToken(r, a)
+			if err != nil {
+				ingestRejected.WithLabelValues(signal, rejectUnauthenticated).Inc()
+				logAndWriteError(w, http.StatusForbidden, err, "")
+				return
 			}
-			ingestRejected.WithLabelValues(signal, reason).Inc()
-			log.Debug().Str("user", token.PreferredUsername).Err(err).Msg("Ingest refused")
-			logAndWriteError(w, http.StatusForbidden, err, "")
-			return
+			writer, err = ingestWriter(token, a.Cfg.Ingest)
+			if err != nil {
+				reason := rejectNoRole
+				if errors.Is(err, errAmbiguousIngestRole) {
+					reason = rejectAmbiguousRole
+				}
+				ingestRejected.WithLabelValues(signal, reason).Inc()
+				log.Debug().Str("user", token.PreferredUsername).Err(err).Msg("Ingest refused")
+				logAndWriteError(w, http.StatusForbidden, err, "")
+				return
+			}
 		}
 
 		in := a.Cfg.Ingest
@@ -369,7 +382,7 @@ func ingestHandler(signal string, a *App) http.HandlerFunc {
 			r.Header.Del(a.Cfg.Alert.TokenHeader)
 		}
 
-		log.Debug().Str("writer", writer).Str("signal", signal).Msg("Forwarding ingest")
+		log.Debug().Str("writer", writer).Str("signal", signal).Bool("static_key", viaKey).Msg("Forwarding ingest")
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		proxy.ServeHTTP(rec, r)
 

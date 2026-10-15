@@ -107,7 +107,20 @@ func TestValidateIngestConfig(t *testing.T) {
 		{"no signal routed", func(c *Config) { c.Ingest.Metrics.URL = "" }, "at least one"},
 		{"relative url", func(c *Config) { c.Ingest.Logs.URL = "/v1" }, "absolute http or https"},
 		{"bad scheme", func(c *Config) { c.Ingest.Traces.URL = "grpc://receiver.example.com:4317" }, "absolute http or https"},
-		{"no writers", func(c *Config) { c.Ingest.Writers = nil }, "writers is empty"},
+		{"no writers and no static keys", func(c *Config) { c.Ingest.Writers = nil }, "both empty"},
+		{"static keys alone are enough", func(c *Config) {
+			c.Ingest.Writers = nil
+			c.Ingest.StaticKeys = map[string]string{testKeyHash("k"): "app-a"}
+		}, ""},
+		{"raw key instead of hash", func(c *Config) {
+			c.Ingest.StaticKeys = map[string]string{"not-a-hash-but-a-key": "app-a"}
+		}, "not a SHA-256 hash"},
+		{"uppercase hash", func(c *Config) {
+			c.Ingest.StaticKeys = map[string]string{strings.ToUpper(testKeyHash("k")): "app-a"}
+		}, "not a SHA-256 hash"},
+		{"static key to a bad writer id", func(c *Config) {
+			c.Ingest.StaticKeys = map[string]string{testKeyHash("k"): "App A"}
+		}, "must match"},
 		{"empty group", func(c *Config) { c.Ingest.Writers = map[string]string{" ": "app-a"} }, "empty group"},
 		{"uppercase id", func(c *Config) { c.Ingest.Writers = map[string]string{"g": "App-A"} }, "must match"},
 		{"slash in id", func(c *Config) { c.Ingest.Writers = map[string]string{"g": "a/b"} }, "must match"},

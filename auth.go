@@ -18,6 +18,9 @@ type OAuthToken struct {
 	PreferredUsername string   `json:"preferred_username"`
 	Email             string   `json:"email"`
 	jwt.RegisteredClaims
+	// viaStaticKey marks an identity that authenticated with a static key; such an
+	// identity is never allowed cluster-wide access.
+	viaStaticKey bool
 }
 
 // UserIdentity represents the minimal identity information needed for label lookup.
@@ -79,6 +82,14 @@ func getIdentity(r *http.Request, a *App) (OAuthToken, error) {
 			log.Debug().Str("cn", cn).Str("header", a.Cfg.Auth.TrustedClientHeader.CNHeader).Msg("Identity from trusted client header")
 			return OAuthToken{PreferredUsername: cn}, nil
 		}
+	}
+
+	// Static read key: the identity names a labels.yaml entry, carries no groups (so it
+	// is never admin), and is refused cluster-wide access in validateLabelPolicy. A
+	// credential that is not a configured key falls through to JWT validation.
+	if id, ok := staticKeyLookup(a.Cfg.Auth.StaticKeys, bearerValue(r, a)); ok {
+		log.Debug().Str("identity", id).Msg("Identity from static key")
+		return OAuthToken{PreferredUsername: id, viaStaticKey: true}, nil
 	}
 	return getToken(r, a)
 }
@@ -259,8 +270,12 @@ func validateLabelPolicy(token OAuthToken, a *App) (*LabelPolicy, bool, error) {
 		return nil, false, fmt.Errorf("error getting label policy: %w", err)
 	}
 
-	// Check for cluster-wide access
+	// Check for cluster-wide access. A long-lived shared key must never unlock an
+	// unenforced view of everything, whatever its labels.yaml entry says.
 	if policy.HasClusterWideAccess() {
+		if token.viaStaticKey {
+			return nil, false, errStaticKeyClusterWide
+		}
 		log.Debug().Str("user", token.PreferredUsername).Bool("ClusterWide", true).Msg("Skipping label enforcement")
 		return nil, true, nil
 	}

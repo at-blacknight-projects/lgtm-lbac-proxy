@@ -57,6 +57,12 @@ data:
         - {{ . | quote }}
         {{- end }}
       {{- end }}
+      {{- with .Values.auth.staticKeys }}
+      static_keys:
+        {{- range $hash, $identity := . }}
+        {{ $hash | quote }}: {{ $identity | quote }}
+        {{- end }}
+      {{- end }}
     {{- end }}
 
     web:
@@ -152,6 +158,12 @@ data:
         {{- range $group, $id := .writers }}
         {{ $group | quote }}: {{ $id | quote }}
         {{- end }}
+      {{- with .staticKeys }}
+      static_keys:
+        {{- range $hash, $writer := . }}
+        {{ $hash | quote }}: {{ $writer | quote }}
+        {{- end }}
+      {{- end }}
       {{- range $signal := list "metrics" "logs" "traces" }}
       {{- with (index $.Values.ingest $signal) }}{{- if .url }}
       {{ $signal }}:
