@@ -75,6 +75,7 @@ go test -bench=. -benchmem -run=^$
 |-----------|-------|---------|
 | **Core** | `main.go`, `config.go` | App initialization, config with hot-reload |
 | **Auth** | `auth.go` | JWT+JWKS validation, extract username/email/groups |
+| **Static keys** | `statickeys.go` | Optional hashed long-lived keys: `auth.static_keys` (read, → identity, never admin or cluster-wide) and `ingest.static_keys` (write, → writer id); checked before JWT, separate maps |
 | **Labels** | `labelstore.go`, `labelrule.go`, `policyparser.go` | Eager parsing at startup, extended format, rules with operators (=, !=, =~, !~), AND/OR logic, fail-fast validation |
 | **Enforcers** | `enforcer_promql.go`, `enforcer_logql.go`, `enforcer_traceql.go` | Parse → validate → inject labels → return modified query |
 | **Routing** | `routes.go` | HTTP endpoints, orchestrate auth→validate→enforce→proxy |

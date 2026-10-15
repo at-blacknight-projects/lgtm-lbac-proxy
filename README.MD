@@ -298,6 +298,71 @@ Metrics on the metrics port:
 
 The listener's HTTP metrics carry the `ingest_` prefix.
 
+### Static keys (optional)
+
+Some callers cannot obtain an expiring token:
+- SaaS exporters that only take fixed headers
+- a Grafana data source behind publicly shared dashboards, whose queries run with no
+  signed-in user
+- scripts on hosts without an identity-provider client
+
+For these, both paths accept optional **static keys**. They are off unless configured,
+and JWTs keep working alongside them.
+
+| | Read path: `auth.static_keys` | Write path: `ingest.static_keys` |
+|---|---|---|
+| Maps | SHA-256 of the key → **identity** | SHA-256 of the key → **writer id** |
+| Scope | That identity's `labels.yaml` entry, enforced like any user | Pushes as that writer only |
+| Limits | No groups, so never admin; a `#cluster-wide` entry is refused | Cannot read |
+
+The maps are separate: a write key never reads and a read key never writes.
+
+```yaml
+auth:
+  static_keys:
+    "<sha256-hex>": public-viewer      # a labels.yaml entry named public-viewer scopes it
+ingest:
+  static_keys:
+    "<sha256-hex>": app-b
+```
+
+Generate a key, and configure **only its hash**:
+
+```bash
+KEY=$(openssl rand -base64 32)            # give the key to the client
+printf %s "$KEY" | sha256sum              # put this hex in the config
+```
+
+The hash is 64 lowercase hex characters. A raw key pasted in by mistake fails
+validation and is never logged in full. Several hashes may map to the same identity or
+writer, so a key can be rotated with no downtime:
+1. Add the new key's hash.
+2. Move the client to the new key.
+3. Remove the old hash.
+
+Static keys never expire on their own: keep each one narrowly scoped and rotate it.
+
+**Grafana publicly shared dashboards.** Their queries run without a viewer's token, so a
+data source that forwards the user's OAuth identity cannot serve them.
+- Give them their own data sources that send a static read key, scoped to the data you
+  intend to share. Panels on shared dashboards cannot use template variables.
+- Grafana can read the key from an environment variable populated from a Kubernetes
+  Secret:
+
+```yaml
+# Grafana data source provisioning
+- name: Metrics (public)
+  type: prometheus
+  url: http://lgtm-lbac-proxy.example.svc:8080
+  jsonData:
+    httpHeaderName1: Authorization
+  secureJsonData:
+    httpHeaderValue1: "Bearer $__env{LBAC_PUBLIC_READ_KEY}"
+```
+
+Grafana OSS has no per-data-source permissions, so every Grafana user can also query
+these data sources. Grant the identity only what everyone may see.
+
 ---
 
 ## How It Works

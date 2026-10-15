@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Static keys**, optional and off by default, for callers that cannot obtain an
+  expiring token. JWTs keep working alongside them.
+  - **`auth.static_keys`** (read): SHA-256 of a key → an identity scoped by its
+    `labels.yaml` entry. It has no groups, so it is never admin, and a `#cluster-wide`
+    entry is refused.
+  - **`ingest.static_keys`** (write): SHA-256 of a key → a writer id. Read and write keys
+    are separate.
+  - **Validation:** only hashes are configured, as 64 lowercase hex characters. A raw key
+    fails validation and is not logged in full.
+  - **Rotation:** several hashes may share an identity or writer, so keys rotate with no
+    downtime.
+  - **Writers:** `ingest.writers` may now be empty when `ingest.static_keys` is set.
+
 ## [0.2.0-alpha.10] - 2026-10-14
 
 ### Added
