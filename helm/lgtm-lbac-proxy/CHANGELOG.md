@@ -5,6 +5,18 @@ All notable changes to the LGTM LBAC Proxy Helm chart will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0-alpha.13] - 2026-10-28
+
+### Changed
+
+- **appVersion 0.2.0-alpha.13**: dependency security fix (CVE-2026-63209). No template
+  or values changes.
+
+### Fixed
+
+- **0.2.0-alpha.12 has no image.** Its appVersion was never published (the image scan
+  failed), so that chart version cannot start. Use 0.2.0-alpha.13.
+
 ## [0.2.0-alpha.12] - 2026-10-28
 
 ### Changed

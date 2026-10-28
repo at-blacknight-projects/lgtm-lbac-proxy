@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0-alpha.13] - 2026-10-28
+
+### Security
+
+- **`github.com/klauspost/compress` 1.18.0 → 1.18.7** for CVE-2026-63209 (HIGH, denial
+  of service). The image scan failed on it for 0.2.0-alpha.12, so **no 0.2.0-alpha.12
+  image was published**. This release carries that release's changes; use it instead.
+
 ## [0.2.0-alpha.12] - 2026-10-28
 
 ### Added
