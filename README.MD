@@ -143,6 +143,17 @@ routing tree as-code. Point Grafana's Alertmanager data source at
 configuration API at `/api/v1/alerts` on the root, where it would collide with the
 ruler's endpoint of the same name.
 
+### Prometheus health endpoints
+
+`GET`/`HEAD /-/healthy` and `/-/ready` are answered on the proxy port (and the mTLS
+port, which serves the same router) for clients that treat the proxy as a Prometheus
+server and probe its health before querying. Some refuse to query at all without a
+200 from `/-/healthy` — the MinIO console's dashboard is one.
+
+As in Prometheus they report liveness of the proxy process only: no credentials are
+required, no upstream is called, and they share `/healthz`'s state (500 once a
+configuration reload has failed). Every query is still authenticated and enforced.
+
 ### OTLP write gateway
 
 An optional, separate listener accepts OTLP/HTTP pushes from callers holding a token,
