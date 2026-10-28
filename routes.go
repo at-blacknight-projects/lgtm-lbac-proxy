@@ -20,23 +20,44 @@ type Route struct {
 	MatchWord string
 }
 
+// healthHandler reports the proxy's own liveness: Ok while its configuration is
+// loaded and valid, Not Ok once a reload has failed.
+func (a *App) healthHandler(w http.ResponseWriter, _ *http.Request) {
+	if a.healthy {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("Ok"))
+	} else {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("Not Ok"))
+	}
+}
+
 // WithHealthz sets up and adds health check endpoints (/healthz and /debug/pprof/)
 // and metrics endpoint (/metrics) to a new router
 func (a *App) WithHealthz() *App {
 	i := mux.NewRouter()
 	a.healthy = true
-	i.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		if a.healthy {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("Ok"))
-		} else {
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = w.Write([]byte("Not Ok"))
-		}
-	})
+	i.HandleFunc("/healthz", a.healthHandler)
 	i.HandleFunc("/debug/pprof/", pprof.Index)
 	i.Handle("/metrics", promhttp.Handler())
 	a.i = i
+	return a
+}
+
+// WithPrometheusHealth answers Prometheus's own health endpoints on the proxy
+// router. Clients that treat the proxy as a Prometheus server probe these before
+// querying and refuse to go on without a 200 — the MinIO console checks
+// /-/healthy before every dashboard query — but they are not part of the query
+// API, so nothing else answers them.
+//
+// Like Prometheus, they report liveness of this process only: no authentication,
+// no upstream call, no label store lookup. They reveal nothing a caller could not
+// learn from the connection succeeding, and every query is still authenticated
+// and enforced as before.
+func (a *App) WithPrometheusHealth() *App {
+	for _, path := range []string{"/-/healthy", "/-/ready"} {
+		a.e.HandleFunc(path, a.healthHandler).Methods(http.MethodGet, http.MethodHead)
+	}
 	return a
 }
 
@@ -51,6 +72,7 @@ func (a *App) WithRoutes() *App {
 	e.Use(a.loggingMiddleware)
 	e.SkipClean(true)
 	a.e = e
+	a.WithPrometheusHealth()
 	a.WithLoki()
 	a.WithThanos()
 	a.WithTempo()
