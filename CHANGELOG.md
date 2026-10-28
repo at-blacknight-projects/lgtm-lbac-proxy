@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0-alpha.12] - 2026-10-28
+
+### Added
+
+- **Prometheus health endpoints** on the proxy port, and on the mTLS port that serves
+  the same router: `GET`/`HEAD /-/healthy` and `/-/ready`. Clients that treat the proxy
+  as a Prometheus server probe them before querying and stop on anything but a 200;
+  the MinIO console's dashboard does so before every widget query.
+  - **Liveness only**, as in Prometheus: no credentials, no upstream call, no label
+    store lookup. They share `/healthz`'s state, so they return 500 once a
+    configuration reload has failed.
+  - Queries are authenticated and enforced exactly as before.
+  - Ingest-only mode serves no read routes, so none of these either.
+
 ## [0.2.0-alpha.11] - 2026-10-15
 
 ### Added

@@ -5,6 +5,14 @@ All notable changes to the LGTM LBAC Proxy Helm chart will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0-alpha.12] - 2026-10-28
+
+### Changed
+
+- **appVersion 0.2.0-alpha.12**: the proxy answers Prometheus's `/-/healthy` and
+  `/-/ready`. No template or values changes, so the rendered output is unchanged apart
+  from the image tag.
+
 ## [0.2.0-alpha.11] - 2026-10-15
 
 ### Added
