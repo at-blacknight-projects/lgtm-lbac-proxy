@@ -31,12 +31,13 @@ This Helm chart deploys the LGTM LBAC Proxy, providing Label-Based Access Contro
 ### Installation
 
 ```bash
-# Add the chart repository (if published)
-helm repo add lgtm-lbac-proxy https://binhnguyenduc.github.io/lgtm-lbac-proxy
+# Add the chart repository
+helm repo add lgtm-lbac-proxy https://at-blacknight-projects.github.io/helm-charts/
 helm repo update
 
-# Install the chart
-helm install lgtm-lbac-proxy lgtm-lbac-proxy/lgtm-lbac-proxy \
+# Install the chart. Current releases are pre-releases (0.2.0-alpha.N), which
+# helm skips unless you pass --devel or an explicit --version.
+helm install lgtm-lbac-proxy lgtm-lbac-proxy/lgtm-lbac-proxy --devel \
   --namespace observability \
   --create-namespace \
   --set proxy.web.jwksCertUrl=https://your-oauth.com/certs \
@@ -518,9 +519,8 @@ kubectl delete namespace observability
 
 ## Support
 
-- **Documentation**: [GitHub Repository](https://github.com/binhnguyenduc/lgtm-lbac-proxy)
-- **Issues**: [GitHub Issues](https://github.com/binhnguyenduc/lgtm-lbac-proxy/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/binhnguyenduc/lgtm-lbac-proxy/discussions)
+- **Documentation**: [GitHub Repository](https://github.com/at-blacknight-projects/lgtm-lbac-proxy)
+- **Issues**: [GitHub Issues](https://github.com/at-blacknight-projects/lgtm-lbac-proxy/issues)
 
 ## License
 

@@ -2,11 +2,10 @@
 
 **Label-Based Access Control for the LGTM Stack** (Loki, Grafana, Tempo, Mimir/Prometheus)
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/binhnguyenduc/lgtm-lbac-proxy)](https://goreportcard.com/report/github.com/binhnguyenduc/lgtm-lbac-proxy)
-[![Build Status](https://img.shields.io/github/actions/workflow/status/binhnguyenduc/lgtm-lbac-proxy/release.yml?label=build)](https://github.com/binhnguyenduc/lgtm-lbac-proxy/actions/workflows/release.yml)
-[![GoDoc](https://godoc.org/github.com/binhnguyenduc/lgtm-lbac-proxy?status.svg)](https://godoc.org/github.com/binhnguyenduc/lgtm-lbac-proxy)
-[![Release](https://img.shields.io/github/v/release/binhnguyenduc/lgtm-lbac-proxy)](https://github.com/binhnguyenduc/lgtm-lbac-proxy/releases/latest)
-![License](https://img.shields.io/github/license/binhnguyenduc/lgtm-lbac-proxy)
+[![Go Report Card](https://goreportcard.com/badge/github.com/at-blacknight-projects/lgtm-lbac-proxy)](https://goreportcard.com/report/github.com/at-blacknight-projects/lgtm-lbac-proxy)
+[![Go Reference](https://pkg.go.dev/badge/github.com/at-blacknight-projects/lgtm-lbac-proxy.svg)](https://pkg.go.dev/github.com/at-blacknight-projects/lgtm-lbac-proxy)
+[![Release](https://img.shields.io/github/v/release/at-blacknight-projects/lgtm-lbac-proxy?include_prereleases)](https://github.com/at-blacknight-projects/lgtm-lbac-proxy/releases)
+![License](https://img.shields.io/github/license/at-blacknight-projects/lgtm-lbac-proxy)
 
 ---
 
@@ -411,14 +410,11 @@ graph TD
 ### Binary
 
 ```bash
-# Download latest release
-wget https://github.com/binhnguyenduc/lgtm-lbac-proxy/releases/latest/download/lgtm-lbac-proxy
-
-# Make executable
-chmod +x lgtm-lbac-proxy
+# Build and install the latest release (Go 1.26+)
+go install github.com/at-blacknight-projects/lgtm-lbac-proxy@latest
 
 # Run with config
-./lgtm-lbac-proxy
+lgtm-lbac-proxy
 ```
 
 ### Docker
@@ -428,8 +424,10 @@ docker run -d \
   -p 8080:8080 \
   -p 8081:8081 \
   -v $(pwd)/configs:/etc/config/config:ro \
-  ghcr.io/binhnguyenduc/lgtm-lbac-proxy:latest
+  ghcr.io/at-blacknight-projects/lgtm-lbac-proxy:<version>
 ```
+
+Use a version from the [package's tags](https://github.com/at-blacknight-projects/lgtm-lbac-proxy/pkgs/container/lgtm-lbac-proxy), e.g. `0.2.0-alpha.13`.
 
 ### Kubernetes (Helm)
 
@@ -757,14 +755,11 @@ user@example.com:
 A migration tool is provided to automatically convert simple format to extended format:
 
 ```bash
-# Download the migration tool
-wget https://github.com/binhnguyenduc/lgtm-lbac-proxy/releases/latest/download/migrate-labels
-
-# Make it executable
-chmod +x migrate-labels
+# Build and install the migration tool (Go 1.26+)
+go install github.com/at-blacknight-projects/lgtm-lbac-proxy/cmd/migrate-labels@latest
 
 # Convert your labels file
-./migrate-labels -input labels.yaml -output labels-extended.yaml -tenant-label namespace
+migrate-labels -input labels.yaml -output labels-extended.yaml -tenant-label namespace
 
 # Verify the output
 cat labels-extended.yaml
@@ -1117,7 +1112,7 @@ All requests must include valid JWT token in Authorization header.
 
 ```bash
 # Clone repository
-git clone https://github.com/binhnguyenduc/lgtm-lbac-proxy.git
+git clone https://github.com/at-blacknight-projects/lgtm-lbac-proxy.git
 cd lgtm-lbac-proxy
 
 # Build binary
@@ -1207,6 +1202,4 @@ This project is licensed under the GNU Affero General Public License v3.0 - see 
 
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/binhnguyenduc/lgtm-lbac-proxy/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/binhnguyenduc/lgtm-lbac-proxy/discussions)
-- **Documentation**: [GitHub Wiki](https://github.com/binhnguyenduc/lgtm-lbac-proxy/wiki)
+- **Issues**: [GitHub Issues](https://github.com/at-blacknight-projects/lgtm-lbac-proxy/issues)

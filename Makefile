@@ -11,7 +11,7 @@ LDFLAGS=-ldflags "-w -s -X main.version=$(VERSION) -X main.buildDate=$(BUILD_DAT
 CONTAINER_RUNTIME?=docker
 IMAGE_NAME?=lgtm-lbac-proxy
 IMAGE_TAG?=$(VERSION)
-REGISTRY?=ghcr.io/binhnguyenduc
+REGISTRY?=ghcr.io/at-blacknight-projects
 
 ## help: Display this help message
 help:
