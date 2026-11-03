@@ -249,10 +249,12 @@ func TestIngestOnlySetsUpNoReadPath(t *testing.T) {
 	})
 	// No labels.yaml here: loading a label store would be fatal.
 	app.Cfg().LabelStore.ConfigPaths = []string{t.TempDir()}
+	labelsLastReloadSuccessful.Set(0)
 
 	app.WithLabelStore().WithProxies().WithRoutes().WithIngest()
 
 	assert.Nil(t, app.LabelStore)
+	assert.Equal(t, 1.0, gaugeValue(labelsLastReloadSuccessful), "no labels reload to fail")
 	assert.Nil(t, app.thanosProxy)
 	assert.Nil(t, app.lokiProxy)
 	assert.Nil(t, app.tempoProxy)

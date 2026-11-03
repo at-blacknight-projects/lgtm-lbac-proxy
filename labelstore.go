@@ -54,6 +54,9 @@ type Labelstore interface {
 func (a *App) WithLabelStore() *App {
 	if a.ingestOnly() {
 		log.Info().Msg("Ingest-only: no label store")
+		// No labels.yaml is ever reloaded, so report the "none has happened yet" value
+		// rather than the gauge's zero, which reads as a rejected reload.
+		labelsLastReloadSuccessful.Set(1)
 		return a
 	}
 	a.LabelStore = &FileLabelStore{}
