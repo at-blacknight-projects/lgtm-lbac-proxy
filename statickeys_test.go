@@ -158,7 +158,7 @@ func staticReadApp(t *testing.T) (*App, map[string]string) {
 		}},
 	}, "")
 	require.NoError(t, err)
-	app.LabelStore.(*FileLabelStore).policyCache["entry:cluster-wide-entry"] = policy
+	storeEntries(app.LabelStore.(*FileLabelStore))["entry:cluster-wide-entry"] = policy
 	return &app, tokens
 }
 

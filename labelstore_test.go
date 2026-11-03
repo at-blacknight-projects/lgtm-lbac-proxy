@@ -125,15 +125,15 @@ MixedCase:
 			// Verify expected keys are present in parsed policy cache
 			for _, expectedKey := range tt.expectedKeys {
 				cacheKey := "entry:" + expectedKey
-				if _, ok := store.policyCache[cacheKey]; !ok {
-					t.Errorf("Expected key %q not found in policyCache. Available keys: %v", expectedKey, mapPolicyCacheKeys(store.policyCache))
+				if _, ok := storeEntries(store)[cacheKey]; !ok {
+					t.Errorf("Expected key %q not found in policyCache. Available keys: %v", expectedKey, mapPolicyCacheKeys(storeEntries(store)))
 				}
 			}
 
 			// Verify unexpected keys are not present (i.e., case was lowercased)
 			for _, unexpectedKey := range tt.unexpectedKeys {
 				cacheKey := "entry:" + unexpectedKey
-				if _, ok := store.policyCache[cacheKey]; ok {
+				if _, ok := storeEntries(store)[cacheKey]; ok {
 					t.Errorf("Unexpected key %q found in policyCache (case was incorrectly modified). %s", unexpectedKey, tt.description)
 				}
 			}
@@ -198,9 +198,9 @@ john.doe@example.com:
 
 	for key := range expectedKeys {
 		cacheKey := "entry:" + key
-		if _, ok := store.policyCache[cacheKey]; !ok {
+		if _, ok := storeEntries(store)[cacheKey]; !ok {
 			t.Errorf("Expected key %q not found with correct case. Available keys: %v. "+
-				"This indicates case sensitivity was not preserved from YAML file.", key, mapPolicyCacheKeys(store.policyCache))
+				"This indicates case sensitivity was not preserved from YAML file.", key, mapPolicyCacheKeys(storeEntries(store)))
 		}
 	}
 
@@ -214,7 +214,7 @@ john.doe@example.com:
 
 	for _, key := range unexpectedLowercaseKeys {
 		cacheKey := "entry:" + key
-		if _, ok := store.policyCache[cacheKey]; ok {
+		if _, ok := storeEntries(store)[cacheKey]; ok {
 			t.Errorf("Unexpected key %q found in policyCache. Case was incorrectly modified "+
 				"(old Viper behavior that we fixed).", key)
 		}
@@ -264,21 +264,21 @@ TESTUSER789:
 	}
 
 	// Verify all variations are present with correct case in parsed policy cache
-	if _, ok := store.policyCache["entry:testUser123"]; !ok {
+	if _, ok := storeEntries(store)["entry:testUser123"]; !ok {
 		t.Error("Expected key 'testUser123' not found in direct YAML parsing result")
 	}
-	if _, ok := store.policyCache["entry:TestUser456"]; !ok {
+	if _, ok := storeEntries(store)["entry:TestUser456"]; !ok {
 		t.Error("Expected key 'TestUser456' not found in direct YAML parsing result")
 	}
-	if _, ok := store.policyCache["entry:TESTUSER789"]; !ok {
+	if _, ok := storeEntries(store)["entry:TESTUSER789"]; !ok {
 		t.Error("Expected key 'TESTUSER789' not found in direct YAML parsing result")
 	}
 
 	// Verify that lowercased versions are NOT present (which would happen with Viper)
-	if _, ok := store.policyCache["entry:testuser456"]; ok {
+	if _, ok := storeEntries(store)["entry:testuser456"]; ok {
 		t.Error("Unexpected lowercased key 'testuser456' found (indicates case was modified by Viper)")
 	}
-	if _, ok := store.policyCache["entry:testuser789"]; ok {
+	if _, ok := storeEntries(store)["entry:testuser789"]; ok {
 		t.Error("Unexpected lowercased key 'testuser789' found (indicates case was modified by Viper)")
 	}
 }
