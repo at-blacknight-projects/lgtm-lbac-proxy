@@ -135,6 +135,33 @@ func TestValidateIngestConfig(t *testing.T) {
 			c.Auth.AuthHeader = "X-Auth-Token"
 			c.Ingest.WriterHeader = "x-auth-token"
 		}, "reserved"},
+		{"edge with client ip header", func(c *Config) {
+			c.Ingest.Edges = []IngestEdge{{Name: "cloudflare", Header: "Cf-Ray", ClientIPHeader: "Cf-Connecting-Ip"}}
+			c.Ingest.EdgeHeader = "X-Ingest-Edge"
+		}, ""},
+		{"edge name not a label value", func(c *Config) {
+			c.Ingest.Edges = []IngestEdge{{Name: "Cloud Flare", Header: "Cf-Ray"}}
+		}, "must match"},
+		{"edge named direct", func(c *Config) {
+			c.Ingest.Edges = []IngestEdge{{Name: "direct", Header: "Cf-Ray"}}
+		}, "reserved for pushes through no edge"},
+		{"edge name used twice", func(c *Config) {
+			c.Ingest.Edges = []IngestEdge{{Name: "cdn", Header: "Cf-Ray"}, {Name: "cdn", Header: "X-Amz-Cf-Id"}}
+		}, "used twice"},
+		{"edge without a header", func(c *Config) {
+			c.Ingest.Edges = []IngestEdge{{Name: "cloudflare"}}
+		}, "not a valid header name"},
+		{"edge marker is Authorization", func(c *Config) {
+			c.Ingest.Edges = []IngestEdge{{Name: "cloudflare", Header: "Authorization"}}
+		}, "reserved"},
+		{"edge marker is the writer header", func(c *Config) {
+			c.Ingest.Edges = []IngestEdge{{Name: "cloudflare", Header: "x-ingest-writer"}}
+		}, "is the writer header"},
+		{"edge client ip header with a space", func(c *Config) {
+			c.Ingest.Edges = []IngestEdge{{Name: "cloudflare", Header: "Cf-Ray", ClientIPHeader: "Cf Ip"}}
+		}, "not a valid header name"},
+		{"edge header is the writer header", func(c *Config) { c.Ingest.EdgeHeader = "X-Ingest-Writer" }, "is the writer header"},
+		{"edge header is Content-Length", func(c *Config) { c.Ingest.EdgeHeader = "Content-Length" }, "reserved"},
 	}
 
 	for _, tt := range tests {
@@ -706,14 +733,14 @@ func TestIngestUnreachableUpstream(t *testing.T) {
 	url := srv.URL
 	srv.Close()
 	app, tokens := ingestHandlerApp(t, map[string]string{"group1": "app-a"}, url)
-	before := counterValue(ingestRejected.WithLabelValues(signalMetrics, rejectUpstreamError))
+	before := counterValue(ingestRejected.WithLabelValues(signalMetrics, rejectUpstreamError, edgeDirect))
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/metrics", strings.NewReader("x"))
 	req.Header.Set("Authorization", "Bearer "+tokens["groupTenant"])
 	rec := serveIngest(app, req)
 
 	assert.Equal(t, http.StatusBadGateway, rec.Code)
-	assert.Equal(t, before+1, counterValue(ingestRejected.WithLabelValues(signalMetrics, rejectUpstreamError)))
+	assert.Equal(t, before+1, counterValue(ingestRejected.WithLabelValues(signalMetrics, rejectUpstreamError, edgeDirect)))
 }
 
 func TestIngestBodySizeCap(t *testing.T) {
@@ -757,10 +784,10 @@ func TestIngestBodySizeCap(t *testing.T) {
 
 func TestIngestMetrics(t *testing.T) {
 	app, tokens := ingestHandlerApp(t, map[string]string{"group1": "app-a"}, okReceiverURL(t))
-	forwarded := ingestRequests.WithLabelValues("app-a", signalLogs, "200")
-	bytesRead := ingestRequestBytes.WithLabelValues("app-a", signalLogs)
-	noRole := ingestRejected.WithLabelValues(signalLogs, rejectNoRole)
-	unauth := ingestRejected.WithLabelValues(signalLogs, rejectUnauthenticated)
+	forwarded := ingestRequests.WithLabelValues("app-a", signalLogs, "200", edgeDirect)
+	bytesRead := ingestRequestBytes.WithLabelValues("app-a", signalLogs, edgeDirect)
+	noRole := ingestRejected.WithLabelValues(signalLogs, rejectNoRole, edgeDirect)
+	unauth := ingestRejected.WithLabelValues(signalLogs, rejectUnauthenticated, edgeDirect)
 	f0, b0, n0, u0 := counterValue(forwarded), counterValue(bytesRead), counterValue(noRole), counterValue(unauth)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/logs", strings.NewReader("12345"))
@@ -777,4 +804,157 @@ func TestIngestMetrics(t *testing.T) {
 	assert.Equal(t, b0+5, counterValue(bytesRead))
 	assert.Equal(t, n0+1, counterValue(noRole))
 	assert.Equal(t, u0+1, counterValue(unauth))
+}
+
+// cloudflareEdge is the edge configuration the issue describes: Cloudflare marks every
+// request it forwards with Cf-Ray and the client address with Cf-Connecting-Ip.
+func cloudflareEdge(c *IngestConfig) {
+	c.Edges = []IngestEdge{{Name: "cloudflare", Header: "Cf-Ray", ClientIPHeader: "Cf-Connecting-Ip"}}
+	c.EdgeHeader = "X-Ingest-Edge"
+}
+
+func TestIngestEdgeClassification(t *testing.T) {
+	cfg := IngestConfig{Edges: []IngestEdge{
+		{Name: "cloudflare", Header: "Cf-Ray", ClientIPHeader: "Cf-Connecting-Ip"},
+		{Name: "cdn", Header: "X-Cdn-Id"},
+	}}
+
+	tests := []struct {
+		name       string
+		headers    map[string]string
+		wantEdge   string
+		wantClient string
+	}{
+		{"no marker is direct", nil, edgeDirect, "192.0.2.10:51000"},
+		{"marker with client ip", map[string]string{"Cf-Ray": "8a1b2c3d4e5f-SYD", "Cf-Connecting-Ip": "198.51.100.7"}, "cloudflare", "198.51.100.7"},
+		{"marker without client ip falls back to the peer", map[string]string{"Cf-Ray": "8a1b"}, "cloudflare", "192.0.2.10:51000"},
+		{"edge without a client ip header", map[string]string{"X-Cdn-Id": "abc"}, "cdn", "192.0.2.10:51000"},
+		{"first configured edge wins", map[string]string{"X-Cdn-Id": "abc", "Cf-Ray": "8a1b"}, "cloudflare", "192.0.2.10:51000"},
+		{"client ip alone is not a marker", map[string]string{"Cf-Connecting-Ip": "198.51.100.7"}, edgeDirect, "192.0.2.10:51000"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/v1/metrics", nil)
+			req.RemoteAddr = "192.0.2.10:51000"
+			for k, v := range tt.headers {
+				req.Header.Set(k, v)
+			}
+			edge, client := cfg.ingestEdge(req)
+			assert.Equal(t, tt.wantEdge, edge)
+			assert.Equal(t, tt.wantClient, client)
+		})
+	}
+}
+
+// The upstream gets the edge in the edge header, set by the gateway: a push through
+// the edge is labelled with it, anything else is direct, and a client-supplied edge
+// header is replaced.
+func TestIngestForwardsEdgeHeader(t *testing.T) {
+	tests := []struct {
+		name    string
+		headers map[string]string
+		want    string
+	}{
+		{"through cloudflare", map[string]string{"Cf-Ray": "8a1b2c3d4e5f-SYD"}, "cloudflare"},
+		{"direct", nil, edgeDirect},
+		{"spoofed edge header on a direct push", map[string]string{"X-Ingest-Edge": "cloudflare"}, edgeDirect},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, got := fakeReceiver(t, http.StatusOK, "")
+			app, tokens := ingestHandlerApp(t, map[string]string{"group1": "app-a"}, srv.URL, cloudflareEdge)
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/metrics", strings.NewReader("x"))
+			req.Header.Set("Authorization", "Bearer "+tokens["groupTenant"])
+			for k, v := range tt.headers {
+				req.Header.Set(k, v)
+			}
+			require.Equal(t, http.StatusOK, serveIngest(app, req).Code)
+			assert.Equal(t, []string{tt.want}, receive(t, got).header.Values("X-Ingest-Edge"))
+		})
+	}
+}
+
+// Without an edge header configured nothing extra goes upstream.
+func TestIngestEdgeHeaderOffByDefault(t *testing.T) {
+	srv, got := fakeReceiver(t, http.StatusOK, "")
+	app, tokens := ingestHandlerApp(t, map[string]string{"group1": "app-a"}, srv.URL,
+		func(c *IngestConfig) { c.Edges = []IngestEdge{{Name: "cloudflare", Header: "Cf-Ray"}} })
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/metrics", strings.NewReader("x"))
+	req.Header.Set("Authorization", "Bearer "+tokens["groupTenant"])
+	req.Header.Set("Cf-Ray", "8a1b")
+	require.Equal(t, http.StatusOK, serveIngest(app, req).Code)
+	assert.Empty(t, receive(t, got).header.Get("X-Ingest-Edge"))
+}
+
+// Forwarded pushes, their bytes, and refusals are all counted per edge, so traffic and
+// junk arriving through the edge can be told apart from direct traffic.
+func TestIngestEdgeMetrics(t *testing.T) {
+	app, tokens := ingestHandlerApp(t, map[string]string{"group1": "app-a"}, okReceiverURL(t), cloudflareEdge)
+	viaEdge := ingestRequests.WithLabelValues("app-a", signalLogs, "200", "cloudflare")
+	direct := ingestRequests.WithLabelValues("app-a", signalLogs, "200", edgeDirect)
+	edgeBytes := ingestRequestBytes.WithLabelValues("app-a", signalLogs, "cloudflare")
+	edgeUnauth := ingestRejected.WithLabelValues(signalLogs, rejectUnauthenticated, "cloudflare")
+	e0, d0, b0, u0 := counterValue(viaEdge), counterValue(direct), counterValue(edgeBytes), counterValue(edgeUnauth)
+
+	push := func(body string, edge, token bool) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/logs", strings.NewReader(body))
+		if token {
+			req.Header.Set("Authorization", "Bearer "+tokens["groupTenant"])
+		}
+		if edge {
+			req.Header.Set("Cf-Ray", "8a1b")
+		}
+		serveIngest(app, req)
+	}
+	push("123", true, true)
+	push("12345", false, true)
+	push("", true, false)
+
+	assert.Equal(t, e0+1, counterValue(viaEdge))
+	assert.Equal(t, d0+1, counterValue(direct))
+	assert.Equal(t, b0+3, counterValue(edgeBytes))
+	assert.Equal(t, u0+1, counterValue(edgeUnauth), "a refused push through the edge is labelled with the edge")
+}
+
+// An upstream failure is labelled with the push's edge too: the error handler reads it
+// from the request body it travels with.
+func TestIngestEdgeOnUpstreamError(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	url := srv.URL
+	srv.Close()
+	app, tokens := ingestHandlerApp(t, map[string]string{"group1": "app-a"}, url, cloudflareEdge)
+	before := counterValue(ingestRejected.WithLabelValues(signalMetrics, rejectUpstreamError, "cloudflare"))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/metrics", strings.NewReader("x"))
+	req.Header.Set("Authorization", "Bearer "+tokens["groupTenant"])
+	req.Header.Set("Cf-Ray", "8a1b")
+	assert.Equal(t, http.StatusBadGateway, serveIngest(app, req).Code)
+	assert.Equal(t, before+1, counterValue(ingestRejected.WithLabelValues(signalMetrics, rejectUpstreamError, "cloudflare")))
+}
+
+// The edges list as the chart renders it loads through viper.
+func TestIngestEdgesLoadFromRenderedYAML(t *testing.T) {
+	rendered := `
+ingest:
+  edge_header: "X-Ingest-Edge"
+  edges:
+    - name: "cloudflare"
+      header: "Cf-Ray"
+      client_ip_header: "Cf-Connecting-Ip"
+    - name: "cdn"
+      header: "X-Cdn-Id"
+`
+	v := viper.NewWithOptions(viper.KeyDelimiter("::"))
+	v.SetConfigType("yaml")
+	require.NoError(t, v.ReadConfig(strings.NewReader(rendered)))
+	cfg := &Config{}
+	require.NoError(t, v.Unmarshal(cfg))
+
+	assert.Equal(t, "X-Ingest-Edge", cfg.Ingest.EdgeHeader)
+	assert.Equal(t, []IngestEdge{
+		{Name: "cloudflare", Header: "Cf-Ray", ClientIPHeader: "Cf-Connecting-Ip"},
+		{Name: "cdn", Header: "X-Cdn-Id"},
+	}, cfg.Ingest.Edges)
 }

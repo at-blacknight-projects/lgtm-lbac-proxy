@@ -36,6 +36,10 @@ const (
 	defaultIngestWriterHeader = "X-Ingest-Writer"
 )
 
+// edgeDirect is the edge label of a push that carries no configured edge's marker
+// header. It cannot be used as an edge name.
+const edgeDirect = "direct"
+
 // The write listener is the one most likely to face untrusted networks, so unlike the
 // read listeners it does not run with net/http's unbounded zero-value timeouts.
 const (
@@ -77,16 +81,16 @@ const (
 var (
 	ingestRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "lgtm_lbac_proxy_ingest_requests_total",
-		Help: "Authorised OTLP pushes forwarded upstream, by writer, signal and response code.",
-	}, []string{"writer", "signal", "code"})
+		Help: "Authorised OTLP pushes forwarded upstream, by writer, signal, response code and the edge they arrived through.",
+	}, []string{"writer", "signal", "code", "edge"})
 	ingestRequestBytes = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "lgtm_lbac_proxy_ingest_request_bytes_total",
-		Help: "Request body bytes read from authorised OTLP pushes, as sent (before any decompression).",
-	}, []string{"writer", "signal"})
+		Help: "Request body bytes read from authorised OTLP pushes, as sent (before any decompression), by writer, signal and edge.",
+	}, []string{"writer", "signal", "edge"})
 	ingestRejected = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "lgtm_lbac_proxy_ingest_rejected_total",
-		Help: "OTLP pushes refused by the gateway, by signal and reason.",
-	}, []string{"signal", "reason"})
+		Help: "OTLP pushes refused by the gateway, by signal, reason and the edge they arrived through.",
+	}, []string{"signal", "reason", "edge"})
 )
 
 // signalURL returns the configured upstream URL for signal, or "" when it is not routed.
@@ -118,6 +122,25 @@ func (c IngestConfig) signalProxy(signal string) *ProxyConfig {
 		return c.Traces.Proxy
 	}
 	return nil
+}
+
+// ingestEdge says how a push reached the gateway: the first configured edge whose marker
+// header the request carries, else edgeDirect. It also returns the client address to
+// log: the edge's client-IP header when it has one and the request carries it, else the
+// connection's peer address.
+func (c IngestConfig) ingestEdge(r *http.Request) (edge, client string) {
+	for _, e := range c.Edges {
+		if r.Header.Get(e.Header) == "" {
+			continue
+		}
+		if e.ClientIPHeader != "" {
+			if ip := r.Header.Get(e.ClientIPHeader); ip != "" {
+				return e.Name, ip
+			}
+		}
+		return e.Name, r.RemoteAddr
+	}
+	return edgeDirect, r.RemoteAddr
 }
 
 // writerHeader returns the configured writer header, or the default.
@@ -165,6 +188,9 @@ func validateIngestConfig(c *Config) error {
 	if err := validateWriterHeader(in.writerHeader(), c.Auth.AuthHeader); err != nil {
 		return fmt.Errorf("ingest.writer_header: %w", err)
 	}
+	if err := validateIngestEdges(in, c.Auth.AuthHeader); err != nil {
+		return err
+	}
 
 	routed := 0
 	for _, signal := range ingestSignals {
@@ -202,6 +228,45 @@ func validateIngestConfig(c *Config) error {
 		}
 		if !writerIDPattern.MatchString(id) {
 			return fmt.Errorf("ingest.writers[%s] id %q must match %s", group, id, writerIDPattern)
+		}
+	}
+	return nil
+}
+
+// validateIngestEdges checks the edges and the edge header. Edge names become label
+// values (so they follow the writer id pattern), are unique, and never "direct". Marker
+// and forwarded headers follow the writer header's rules, and must not be the writer
+// header itself.
+func validateIngestEdges(in IngestConfig, authHeader string) error {
+	writerHeader := in.writerHeader()
+	seen := make(map[string]bool, len(in.Edges))
+	for i, e := range in.Edges {
+		if !writerIDPattern.MatchString(e.Name) {
+			return fmt.Errorf("ingest.edges[%d].name %q must match %s", i, e.Name, writerIDPattern)
+		}
+		if e.Name == edgeDirect {
+			return fmt.Errorf("ingest.edges[%d].name %q is reserved for pushes through no edge", i, e.Name)
+		}
+		if seen[e.Name] {
+			return fmt.Errorf("ingest.edges[%d].name %q is used twice", i, e.Name)
+		}
+		seen[e.Name] = true
+		if err := validateWriterHeader(e.Header, authHeader); err != nil {
+			return fmt.Errorf("ingest.edges[%d].header: %w", i, err)
+		}
+		if strings.EqualFold(e.Header, writerHeader) {
+			return fmt.Errorf("ingest.edges[%d].header %q is the writer header", i, e.Header)
+		}
+		if e.ClientIPHeader != "" && !headerTokenPattern.MatchString(e.ClientIPHeader) {
+			return fmt.Errorf("ingest.edges[%d].client_ip_header %q is not a valid header name", i, e.ClientIPHeader)
+		}
+	}
+	if in.EdgeHeader != "" {
+		if err := validateWriterHeader(in.EdgeHeader, authHeader); err != nil {
+			return fmt.Errorf("ingest.edge_header: %w", err)
+		}
+		if strings.EqualFold(in.EdgeHeader, writerHeader) {
+			return fmt.Errorf("ingest.edge_header %q is the writer header", in.EdgeHeader)
 		}
 	}
 	return nil
@@ -329,50 +394,59 @@ func (a *App) WithIngest() *App {
 // guarantee that the upstream cannot be reached except through the gateway.
 func ingestHandler(signal string, a *App) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		in := a.Cfg.Ingest
+		// Classified before authentication, so refused pushes are labelled too.
+		edge, client := in.ingestEdge(r)
+
 		// A static write key maps straight to its writer. Anything else must be a JWT
 		// whose groups resolve to exactly one writer.
-		writer, viaKey := staticKeyLookup(a.Cfg.Ingest.StaticKeys, bearerValue(r, a))
+		writer, viaKey := staticKeyLookup(in.StaticKeys, bearerValue(r, a))
 		if !viaKey {
 			token, err := getToken(r, a)
 			if err != nil {
-				ingestRejected.WithLabelValues(signal, rejectUnauthenticated).Inc()
+				ingestRejected.WithLabelValues(signal, rejectUnauthenticated, edge).Inc()
 				logAndWriteError(w, http.StatusForbidden, err, "")
 				return
 			}
-			writer, err = ingestWriter(token, a.Cfg.Ingest)
+			writer, err = ingestWriter(token, in)
 			if err != nil {
 				reason := rejectNoRole
 				if errors.Is(err, errAmbiguousIngestRole) {
 					reason = rejectAmbiguousRole
 				}
-				ingestRejected.WithLabelValues(signal, reason).Inc()
-				log.Debug().Str("user", token.PreferredUsername).Err(err).Msg("Ingest refused")
+				ingestRejected.WithLabelValues(signal, reason, edge).Inc()
+				log.Debug().Str("user", token.PreferredUsername).Str("edge", edge).Str("client", client).Err(err).Msg("Ingest refused")
 				logAndWriteError(w, http.StatusForbidden, err, "")
 				return
 			}
 		}
 
-		in := a.Cfg.Ingest
 		if r.ContentLength > in.MaxBodyBytes {
-			ingestRejected.WithLabelValues(signal, rejectTooLarge).Inc()
+			ingestRejected.WithLabelValues(signal, rejectTooLarge, edge).Inc()
 			logAndWriteError(w, http.StatusRequestEntityTooLarge, fmt.Errorf("request body exceeds %d bytes", in.MaxBodyBytes), "")
 			return
 		}
 
 		proxy := a.ingestProxies[signal]
 		if proxy == nil {
-			ingestRejected.WithLabelValues(signal, rejectUpstreamError).Inc()
+			ingestRejected.WithLabelValues(signal, rejectUpstreamError, edge).Inc()
 			logAndWriteError(w, http.StatusBadGateway, fmt.Errorf("no upstream for %s", signal), "")
 			return
 		}
 
-		body := &ingestBody{ReadCloser: http.MaxBytesReader(w, r.Body, in.MaxBodyBytes)}
+		body := &ingestBody{ReadCloser: http.MaxBytesReader(w, r.Body, in.MaxBodyBytes), edge: edge}
 		r = r.WithContext(context.WithValue(r.Context(), ingestBodyKey{}, body))
 		r.Body = body
 
 		header := in.writerHeader()
 		r.Header.Del(header)
 		r.Header.Set(header, writer)
+		// Like the writer header, the edge header is the gateway's assertion: overwritten,
+		// never passed through.
+		if in.EdgeHeader != "" {
+			r.Header.Del(in.EdgeHeader)
+			r.Header.Set(in.EdgeHeader, edge)
+		}
 		// The caller's credentials are for the gateway, not the upstream.
 		r.Header.Del("Authorization")
 		if a.Cfg.Auth.AuthHeader != "" {
@@ -382,12 +456,13 @@ func ingestHandler(signal string, a *App) http.HandlerFunc {
 			r.Header.Del(a.Cfg.Alert.TokenHeader)
 		}
 
-		log.Debug().Str("writer", writer).Str("signal", signal).Bool("static_key", viaKey).Msg("Forwarding ingest")
+		log.Debug().Str("writer", writer).Str("signal", signal).Bool("static_key", viaKey).
+			Str("edge", edge).Str("client", client).Msg("Forwarding ingest")
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		proxy.ServeHTTP(rec, r)
 
-		ingestRequests.WithLabelValues(writer, signal, strconv.Itoa(rec.status)).Inc()
-		ingestRequestBytes.WithLabelValues(writer, signal).Add(float64(body.n))
+		ingestRequests.WithLabelValues(writer, signal, strconv.Itoa(rec.status), edge).Inc()
+		ingestRequestBytes.WithLabelValues(writer, signal, edge).Add(float64(body.n))
 	}
 }
 
@@ -395,11 +470,13 @@ func ingestHandler(signal string, a *App) http.HandlerFunc {
 type ingestBodyKey struct{}
 
 // ingestBody counts the bytes read from a push and records whether the size cap cut
-// it off, so a failed forward can be told apart from an oversized one.
+// it off, so a failed forward can be told apart from an oversized one. It also carries
+// the push's edge, for the error handler's rejection metric.
 type ingestBody struct {
 	io.ReadCloser
 	n        int64
 	tooLarge bool
+	edge     string
 }
 
 func (b *ingestBody) Read(p []byte) (int, error) {
@@ -416,12 +493,17 @@ func (b *ingestBody) Read(p []byte) (int, error) {
 // mid-stream, 502 for anything else.
 func ingestErrorHandler(signal string) func(http.ResponseWriter, *http.Request, error) {
 	return func(w http.ResponseWriter, r *http.Request, err error) {
-		if body, ok := r.Context().Value(ingestBodyKey{}).(*ingestBody); ok && body.tooLarge {
-			ingestRejected.WithLabelValues(signal, rejectTooLarge).Inc()
+		edge := edgeDirect
+		body, ok := r.Context().Value(ingestBodyKey{}).(*ingestBody)
+		if ok {
+			edge = body.edge
+		}
+		if ok && body.tooLarge {
+			ingestRejected.WithLabelValues(signal, rejectTooLarge, edge).Inc()
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 			return
 		}
-		ingestRejected.WithLabelValues(signal, rejectUpstreamError).Inc()
+		ingestRejected.WithLabelValues(signal, rejectUpstreamError, edge).Inc()
 		log.Error().Err(err).Str("upstream", "ingest-"+signal).Msg("Proxy error")
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 	}

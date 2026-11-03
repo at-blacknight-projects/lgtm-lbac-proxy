@@ -301,10 +301,33 @@ export OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative
 ```
 
 Metrics on the metrics port:
-- `lgtm_lbac_proxy_ingest_requests_total{writer,signal,code}`
-- `lgtm_lbac_proxy_ingest_request_bytes_total{writer,signal}`
-- `lgtm_lbac_proxy_ingest_rejected_total{signal,reason}`, where reason is one of
+- `lgtm_lbac_proxy_ingest_requests_total{writer,signal,code,edge}`
+- `lgtm_lbac_proxy_ingest_request_bytes_total{writer,signal,edge}`
+- `lgtm_lbac_proxy_ingest_rejected_total{signal,reason,edge}`, where reason is one of
   `unauthenticated`, `no_role`, `ambiguous_role`, `too_large`, `upstream_error`
+
+**Edges (optional).** When the gateway is published through more than one path (for
+example on an internal load balancer and through a CDN or tunnel), `edges` says which
+path each push took. A push carrying an edge's marker header is labelled with that
+edge's name in the metrics above, refusals included. Anything else is `direct`. With
+`edge_header` set, the upstream also receives the edge name, overwritten like the writer
+header:
+
+```yaml
+ingest:
+  edges:
+    - name: cloudflare
+      header: Cf-Ray                      # added by Cloudflare to every forwarded request
+      client_ip_header: Cf-Connecting-Ip  # optional; logged with the push at debug level
+  edge_header: X-Ingest-Edge              # optional; unset = not forwarded
+```
+
+```promql
+sum by (writer, edge) (rate(lgtm_lbac_proxy_ingest_requests_total[5m]))
+```
+
+A direct client could send the marker header itself, so the edge is for observing
+traffic, not for access decisions.
 
 The listener's HTTP metrics carry the `ingest_` prefix.
 
