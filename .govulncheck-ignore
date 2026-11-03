@@ -1,0 +1,14 @@
+# Reachable Go vulnerabilities accepted by the CI audit (ci-templates' Go preset).
+# Format: GO-YYYY-NNNN  # why the vulnerable code is not exposed
+# Every entry needs a reason; anything reachable that isn't listed still fails the
+# audit, and entries no longer reported raise a warning to remove them.
+#
+# grafana/tempo (#6): whole-module advisories (no affected symbols), so govulncheck
+# flags any use of the module. Their only fixes are tempo v2.x releases; tempo is a
+# v1-path Go module (no /v2), so no fixed Go module version exists. We import only
+# github.com/grafana/tempo/pkg/traceql, the TraceQL parser (enforcer_traceql.go);
+# the advisories concern tempo's server components, which are neither imported nor
+# run here. Also accepted in .trivyignore. Reassess if we import tempo server or
+# storage packages, or when tempo publishes a /v2 module path.
+GO-2026-5528  # CVE-2026-21728: tempo server resource consumption; only pkg/traceql (parser) is imported
+GO-2026-5359  # CVE-2026-28377: tempo server encryption strength; only pkg/traceql (parser) is imported
