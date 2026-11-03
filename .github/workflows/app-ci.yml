@@ -2,8 +2,7 @@ name: App CI
 
 # PR and push checks from the shared ci-templates: PR title, Go tests with coverage,
 # Trivy filesystem scan, a check build + scan of the image, and Helm lint/render.
-# Pinned to the template branch while ci-templates is unreleased; repin to a release
-# tag before merging.
+# Pinned to the v0 major tag, which ci-templates moves to each compatible release.
 
 on:
   pull_request:
@@ -19,7 +18,7 @@ permissions:
 
 jobs:
   ci:
-    uses: at-blacknight-projects/ci-templates/.github/workflows/app-ci.yml@feat/v1-workflows
+    uses: at-blacknight-projects/ci-templates/.github/workflows/app-ci.yml@v0
     with:
       toolchain: go
       images: '[{"name": "", "context": ".", "file": "Containerfile.Build"}]'
