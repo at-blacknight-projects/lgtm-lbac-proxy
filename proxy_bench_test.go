@@ -10,7 +10,7 @@ import (
 func BenchmarkProxyFieldAccess(b *testing.B) {
 	app := &App{}
 	app.WithConfig()
-	app.Cfg.Loki.URL = "http://loki:3100"
+	app.Cfg().Loki.URL = "http://loki:3100"
 	app.TlS = &tls.Config{InsecureSkipVerify: true}
 	app.WithProxies()
 
@@ -90,7 +90,7 @@ func BenchmarkProxyInitialization(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		app := &App{}
 		app.WithConfig()
-		app.Cfg.Loki.URL = "http://loki:3100"
+		app.Cfg().Loki.URL = "http://loki:3100"
 		app.TlS = &tls.Config{InsecureSkipVerify: true}
 		app.WithProxies()
 	}
@@ -102,9 +102,9 @@ func BenchmarkProxyInitializationAllUpstreams(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		app := &App{}
 		app.WithConfig()
-		app.Cfg.Loki.URL = "http://loki:3100"
-		app.Cfg.Thanos.URL = "http://thanos:9090"
-		app.Cfg.Tempo.URL = "http://tempo:3200"
+		app.Cfg().Loki.URL = "http://loki:3100"
+		app.Cfg().Thanos.URL = "http://thanos:9090"
+		app.Cfg().Tempo.URL = "http://tempo:3200"
 		app.TlS = &tls.Config{InsecureSkipVerify: true}
 		app.WithProxies()
 	}

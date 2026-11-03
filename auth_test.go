@@ -33,29 +33,29 @@ func TestParseJwtToken_AudienceIssuer(t *testing.T) {
 	}
 
 	t.Run("audience and issuer accepted", func(t *testing.T) {
-		app.Cfg.Auth.Issuer = iss
-		app.Cfg.Auth.Audiences = []string{aud}
+		app.Cfg().Auth.Issuer = iss
+		app.Cfg().Auth.Audiences = []string{aud}
 		_, _, err := parseJwtToken(sign(map[string]interface{}{"iss": iss, "aud": aud}), &app)
 		assert.NoError(t, err)
 	})
 
 	t.Run("wrong audience rejected", func(t *testing.T) {
-		app.Cfg.Auth.Issuer = ""
-		app.Cfg.Auth.Audiences = []string{aud}
+		app.Cfg().Auth.Issuer = ""
+		app.Cfg().Auth.Audiences = []string{aud}
 		_, _, err := parseJwtToken(sign(map[string]interface{}{"aud": "api://someone-else"}), &app)
 		assert.ErrorContains(t, err, "invalid audience")
 	})
 
 	t.Run("wrong issuer rejected", func(t *testing.T) {
-		app.Cfg.Auth.Issuer = iss
-		app.Cfg.Auth.Audiences = nil
+		app.Cfg().Auth.Issuer = iss
+		app.Cfg().Auth.Audiences = nil
 		_, _, err := parseJwtToken(sign(map[string]interface{}{"iss": "https://evil/", "aud": aud}), &app)
 		assert.ErrorContains(t, err, "invalid issuer")
 	})
 
 	t.Run("unset checks skip (backward compatible)", func(t *testing.T) {
-		app.Cfg.Auth.Issuer = ""
-		app.Cfg.Auth.Audiences = nil
+		app.Cfg().Auth.Issuer = ""
+		app.Cfg().Auth.Audiences = nil
 		_, _, err := parseJwtToken(sign(map[string]interface{}{"aud": "anything", "iss": "anywhere"}), &app)
 		assert.NoError(t, err)
 	})
@@ -96,8 +96,8 @@ func TestGetToken_InvalidAuthorizationFormat(t *testing.T) {
 
 func TestGetIdentity_TrustedHeader_Enabled(t *testing.T) {
 	app, _ := setupTestMain()
-	app.Cfg.Auth.TrustedClientHeader.Enabled = true
-	app.Cfg.Auth.TrustedClientHeader.CNHeader = "X-Client-CN"
+	app.Cfg().Auth.TrustedClientHeader.Enabled = true
+	app.Cfg().Auth.TrustedClientHeader.CNHeader = "X-Client-CN"
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("X-Client-CN", "svc-reader")
 
@@ -110,7 +110,7 @@ func TestGetIdentity_TrustedHeader_Enabled(t *testing.T) {
 
 func TestGetIdentity_TrustedHeader_Disabled_IgnoresHeader(t *testing.T) {
 	app, _ := setupTestMain()
-	app.Cfg.Auth.TrustedClientHeader.Enabled = false
+	app.Cfg().Auth.TrustedClientHeader.Enabled = false
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("X-Client-CN", "svc-reader")
 
@@ -123,8 +123,8 @@ func TestGetIdentity_TrustedHeader_Disabled_IgnoresHeader(t *testing.T) {
 
 func TestGetIdentity_TrustedHeader_Enabled_FallsBackToJWT(t *testing.T) {
 	app, tokens := setupTestMain()
-	app.Cfg.Auth.TrustedClientHeader.Enabled = true
-	app.Cfg.Auth.TrustedClientHeader.CNHeader = "X-Client-CN"
+	app.Cfg().Auth.TrustedClientHeader.Enabled = true
+	app.Cfg().Auth.TrustedClientHeader.CNHeader = "X-Client-CN"
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	// No CN header: a human caller presenting a JWT must still authenticate.
 	req.Header.Set("Authorization", "Bearer "+tokens["userTenant"])
@@ -137,8 +137,8 @@ func TestGetIdentity_TrustedHeader_Enabled_FallsBackToJWT(t *testing.T) {
 
 func TestGetIdentity_TrustedHeader_Enabled_EmptyHeaderFallsBack(t *testing.T) {
 	app, _ := setupTestMain()
-	app.Cfg.Auth.TrustedClientHeader.Enabled = true
-	app.Cfg.Auth.TrustedClientHeader.CNHeader = "X-Client-CN"
+	app.Cfg().Auth.TrustedClientHeader.Enabled = true
+	app.Cfg().Auth.TrustedClientHeader.CNHeader = "X-Client-CN"
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("X-Client-CN", "   ") // whitespace-only must not be treated as an identity
 
@@ -150,10 +150,10 @@ func TestGetIdentity_TrustedHeader_Enabled_EmptyHeaderFallsBack(t *testing.T) {
 
 func TestGetIdentity_ClientCert_AdmittedAndScoped(t *testing.T) {
 	app, _ := setupTestMain()
-	app.Cfg.Auth.ClientCert.Enabled = true
-	app.Cfg.Auth.ClientCert.Source = "mtls"
-	app.Cfg.Auth.ClientCert.IdentityFrom = CertFieldCN
-	app.Cfg.Auth.ClientCert.Admission = CertAdmissionPolicy{
+	app.Cfg().Auth.ClientCert.Enabled = true
+	app.Cfg().Auth.ClientCert.Source = "mtls"
+	app.Cfg().Auth.ClientCert.IdentityFrom = CertFieldCN
+	app.Cfg().Auth.ClientCert.Admission = CertAdmissionPolicy{
 		Logic: LogicAND,
 		Rules: []CertMatchRule{
 			{Field: CertFieldTemplateOID, Operator: OperatorEquals, Values: []string{testTemplateOID}},
@@ -172,9 +172,9 @@ func TestGetIdentity_ClientCert_AdmittedAndScoped(t *testing.T) {
 
 func TestGetIdentity_ClientCert_AdmissionDenied(t *testing.T) {
 	app, _ := setupTestMain()
-	app.Cfg.Auth.ClientCert.Enabled = true
-	app.Cfg.Auth.ClientCert.Source = "mtls"
-	app.Cfg.Auth.ClientCert.Admission = CertAdmissionPolicy{
+	app.Cfg().Auth.ClientCert.Enabled = true
+	app.Cfg().Auth.ClientCert.Source = "mtls"
+	app.Cfg().Auth.ClientCert.Admission = CertAdmissionPolicy{
 		Logic: LogicAND,
 		Rules: []CertMatchRule{
 			{Field: CertFieldTemplateOID, Operator: OperatorEquals, Values: []string{"1.2.3.4.5"}}, // wrong template
@@ -192,8 +192,8 @@ func TestGetIdentity_ClientCert_AdmissionDenied(t *testing.T) {
 
 func TestGetIdentity_ClientCert_NoCertFallsBackToJWT(t *testing.T) {
 	app, tokens := setupTestMain()
-	app.Cfg.Auth.ClientCert.Enabled = true
-	app.Cfg.Auth.ClientCert.Source = "mtls"
+	app.Cfg().Auth.ClientCert.Enabled = true
+	app.Cfg().Auth.ClientCert.Source = "mtls"
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	// No TLS peer cert; a JWT caller must still authenticate.
@@ -232,8 +232,8 @@ func TestIsAdmin_ValidAdminUser(t *testing.T) {
 
 	oauthToken, _, _ := parseJwtToken(tokenString, &app)
 
-	app.Cfg.Admin.Group = "admins"
-	app.Cfg.Admin.Bypass = true
+	app.Cfg().Admin.Group = "admins"
+	app.Cfg().Admin.Bypass = true
 
 	isAdmin := isAdmin(oauthToken, &app)
 
@@ -246,8 +246,8 @@ func TestIsAdmin_NonAdminUser(t *testing.T) {
 
 	oauthToken, _, _ := parseJwtToken(tokenString, &app)
 
-	app.Cfg.Admin.Group = "admins"
-	app.Cfg.Admin.Bypass = true
+	app.Cfg().Admin.Group = "admins"
+	app.Cfg().Admin.Bypass = true
 
 	isAdmin := isAdmin(oauthToken, &app)
 
@@ -256,7 +256,7 @@ func TestIsAdmin_NonAdminUser(t *testing.T) {
 
 func TestGetToken_CustomAuthHeader(t *testing.T) {
 	app, tokens := setupTestMain()
-	app.Cfg.Web.AuthHeader = "X-Custom-Auth"
+	app.Cfg().Web.AuthHeader = "X-Custom-Auth"
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("X-Custom-Auth", "Bearer "+tokens["userTenant"])
 
@@ -269,7 +269,7 @@ func TestGetToken_CustomAuthHeader(t *testing.T) {
 
 func TestGetToken_CustomAuthHeader_MissingHeader(t *testing.T) {
 	app, _ := setupTestMain()
-	app.Cfg.Web.AuthHeader = "X-Custom-Auth"
+	app.Cfg().Web.AuthHeader = "X-Custom-Auth"
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 
 	token, err := getToken(req, &app)
@@ -281,7 +281,7 @@ func TestGetToken_CustomAuthHeader_MissingHeader(t *testing.T) {
 
 func TestGetToken_CustomAuthHeader_InvalidFormat(t *testing.T) {
 	app, _ := setupTestMain()
-	app.Cfg.Web.AuthHeader = "X-Custom-Auth"
+	app.Cfg().Web.AuthHeader = "X-Custom-Auth"
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("X-Custom-Auth", "InvalidToken")
 
@@ -302,14 +302,14 @@ func TestGetToken_DefaultAuthHeader(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.Equal(t, "user", token.PreferredUsername)
-	assert.Equal(t, "Authorization", app.Cfg.Web.AuthHeader)
+	assert.Equal(t, "Authorization", app.Cfg().Web.AuthHeader)
 }
 
 func TestGetToken_AlertModeFallback_CustomAuthHeader(t *testing.T) {
 	app, tokens := setupTestMain()
-	app.Cfg.Web.AuthHeader = "X-Custom-Auth"
-	app.Cfg.Alert.Enabled = true
-	app.Cfg.Alert.TokenHeader = "X-Alert-Token"
+	app.Cfg().Web.AuthHeader = "X-Custom-Auth"
+	app.Cfg().Alert.Enabled = true
+	app.Cfg().Alert.TokenHeader = "X-Alert-Token"
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	// Don't set X-Custom-Auth, but set alert token
@@ -324,7 +324,7 @@ func TestGetToken_AlertModeFallback_CustomAuthHeader(t *testing.T) {
 
 func TestGetToken_CustomScheme(t *testing.T) {
 	app, tokens := setupTestMain()
-	app.Cfg.Auth.AuthScheme = "Token"
+	app.Cfg().Auth.AuthScheme = "Token"
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Token "+tokens["userTenant"])
 
@@ -336,7 +336,7 @@ func TestGetToken_CustomScheme(t *testing.T) {
 
 func TestGetToken_EmptySchemeUsesRawToken(t *testing.T) {
 	app, tokens := setupTestMain()
-	app.Cfg.Auth.AuthScheme = ""
+	app.Cfg().Auth.AuthScheme = ""
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", tokens["userTenant"])
 
@@ -348,7 +348,7 @@ func TestGetToken_EmptySchemeUsesRawToken(t *testing.T) {
 
 func TestGetToken_InvalidSchemeFormat(t *testing.T) {
 	app, tokens := setupTestMain()
-	app.Cfg.Auth.AuthScheme = "Bearer"
+	app.Cfg().Auth.AuthScheme = "Bearer"
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Token "+tokens["userTenant"])
 
@@ -361,7 +361,7 @@ func TestGetToken_InvalidSchemeFormat(t *testing.T) {
 
 func TestGetToken_SchemeCaseSensitive(t *testing.T) {
 	app, tokens := setupTestMain()
-	app.Cfg.Auth.AuthScheme = "Bearer"
+	app.Cfg().Auth.AuthScheme = "Bearer"
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "bearer "+tokens["userTenant"])
 
@@ -374,7 +374,7 @@ func TestGetToken_SchemeCaseSensitive(t *testing.T) {
 
 func TestGetToken_SchemeWhitespaceHandling(t *testing.T) {
 	app, tokens := setupTestMain()
-	app.Cfg.Auth.AuthScheme = "Bearer"
+	app.Cfg().Auth.AuthScheme = "Bearer"
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer   "+tokens["userTenant"])
 
@@ -386,9 +386,9 @@ func TestGetToken_SchemeWhitespaceHandling(t *testing.T) {
 
 func TestGetToken_AlertFallbackCustomScheme(t *testing.T) {
 	app, tokens := setupTestMain()
-	app.Cfg.Auth.AuthScheme = "Token"
-	app.Cfg.Alert.Enabled = true
-	app.Cfg.Alert.TokenHeader = "X-Alert-Token"
+	app.Cfg().Auth.AuthScheme = "Token"
+	app.Cfg().Alert.Enabled = true
+	app.Cfg().Alert.TokenHeader = "X-Alert-Token"
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("X-Alert-Token", "Token "+tokens["userTenant"])
@@ -404,9 +404,9 @@ func TestParseJwtToken_DefaultClaimNames(t *testing.T) {
 	tokenString := tokens["userTenant"]
 
 	// Verify default claim names are set
-	assert.Equal(t, "preferred_username", app.Cfg.Web.OAuthUsernameClaim)
-	assert.Equal(t, "email", app.Cfg.Web.OAuthEmailClaim)
-	assert.Equal(t, "groups", app.Cfg.Web.OAuthGroupName)
+	assert.Equal(t, "preferred_username", app.Cfg().Web.OAuthUsernameClaim)
+	assert.Equal(t, "email", app.Cfg().Web.OAuthEmailClaim)
+	assert.Equal(t, "groups", app.Cfg().Web.OAuthGroupName)
 
 	oauthToken, _, err := parseJwtToken(tokenString, &app)
 
@@ -418,7 +418,7 @@ func TestParseJwtToken_DefaultClaimNames(t *testing.T) {
 func TestParseJwtToken_CustomUsernameClaim_AzureAD(t *testing.T) {
 	// Test with Azure AD style claims
 	app, _, pk := setupTestMainWithPrivateKey()
-	app.Cfg.Web.OAuthUsernameClaim = "unique_name"
+	app.Cfg().Web.OAuthUsernameClaim = "unique_name"
 
 	// Create token with Azure AD claim structure
 	claims := map[string]interface{}{
@@ -440,7 +440,7 @@ func TestParseJwtToken_CustomUsernameClaim_AzureAD(t *testing.T) {
 func TestParseJwtToken_CustomEmailClaim_AzureAD(t *testing.T) {
 	// Test with Azure AD upn (User Principal Name) for email
 	app, _, pk := setupTestMainWithPrivateKey()
-	app.Cfg.Web.OAuthEmailClaim = "upn"
+	app.Cfg().Web.OAuthEmailClaim = "upn"
 
 	claims := map[string]interface{}{
 		"preferred_username": "azure-user",
@@ -460,7 +460,7 @@ func TestParseJwtToken_CustomEmailClaim_AzureAD(t *testing.T) {
 func TestParseJwtToken_CustomGroupsClaim_Auth0(t *testing.T) {
 	// Test with Auth0 namespaced claims
 	app, _, pk := setupTestMainWithPrivateKey()
-	app.Cfg.Web.OAuthGroupName = "https://example.com/groups"
+	app.Cfg().Web.OAuthGroupName = "https://example.com/groups"
 
 	claims := map[string]interface{}{
 		"preferred_username":         "auth0-user",
@@ -481,9 +481,9 @@ func TestParseJwtToken_CustomGroupsClaim_Auth0(t *testing.T) {
 func TestParseJwtToken_AllCustomClaims(t *testing.T) {
 	// Test with all claims customized
 	app, _, pk := setupTestMainWithPrivateKey()
-	app.Cfg.Web.OAuthUsernameClaim = "sub"
-	app.Cfg.Web.OAuthEmailClaim = "mail"
-	app.Cfg.Web.OAuthGroupName = "roles"
+	app.Cfg().Web.OAuthUsernameClaim = "sub"
+	app.Cfg().Web.OAuthEmailClaim = "mail"
+	app.Cfg().Web.OAuthGroupName = "roles"
 
 	claims := map[string]interface{}{
 		"sub":   "user-12345",
@@ -504,7 +504,7 @@ func TestParseJwtToken_AllCustomClaims(t *testing.T) {
 func TestParseJwtToken_MissingCustomClaim(t *testing.T) {
 	// Test when configured claim is missing from token
 	app, _, pk := setupTestMainWithPrivateKey()
-	app.Cfg.Web.OAuthUsernameClaim = "non_existent_claim"
+	app.Cfg().Web.OAuthUsernameClaim = "non_existent_claim"
 
 	claims := map[string]interface{}{
 		"preferred_username": "user",

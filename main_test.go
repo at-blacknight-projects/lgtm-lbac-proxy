@@ -161,7 +161,7 @@ func setupTestMainWithPrivateKey() (App, map[string]string, *ecdsa.PrivateKey) {
 	app := App{}
 	app.WithConfig()
 	// defer jwksServer.Close()
-	app.Cfg.Web.JwksCertURL = jwksServer.URL
+	app.Cfg().Web.JwksCertURL = jwksServer.URL
 	app.WithJWKS()
 
 	// Set up the upstream server
@@ -172,8 +172,8 @@ func setupTestMainWithPrivateKey() (App, map[string]string, *ecdsa.PrivateKey) {
 		}
 	}))
 	// defer upstreamServer.Close()
-	app.Cfg.Thanos.URL = upstreamServer.URL
-	app.Cfg.Loki.URL = upstreamServer.URL
+	app.Cfg().Thanos.URL = upstreamServer.URL
+	app.Cfg().Loki.URL = upstreamServer.URL
 
 	// Create a mock label store with pre-parsed policies (eager parsing)
 	parser := NewPolicyParser()
@@ -425,9 +425,9 @@ func Test_reverseProxy(t *testing.T) {
 
 func TestAlertAuth(t *testing.T) {
 	app, tokens := setupTestMain()
-	app.Cfg.Alert.Enabled = true
-	app.Cfg.Alert.TokenHeader = "X-LGTM-Alert-Token"
-	app.Cfg.Alert.CertURL = "http://localhost:8080/jwks"
+	app.Cfg().Alert.Enabled = true
+	app.Cfg().Alert.TokenHeader = "X-LGTM-Alert-Token"
+	app.Cfg().Alert.CertURL = "http://localhost:8080/jwks"
 
 	log.Level(2)
 
@@ -578,7 +578,7 @@ func TestAlertAuth(t *testing.T) {
 			}
 			// IMPORTANT: We set the alert token header instead of “Authorization”
 			if tc.setAuthorization {
-				req.Header.Add(app.Cfg.Alert.TokenHeader, tc.authorization)
+				req.Header.Add(app.Cfg().Alert.TokenHeader, tc.authorization)
 			}
 
 			// Prepare the response recorder
@@ -604,8 +604,8 @@ func TestIsAdminSkip(t *testing.T) {
 
 	app := &App{}
 	app.WithConfig()
-	app.Cfg.Admin.Bypass = true
-	app.Cfg.Admin.Group = "gepardec-run-admins"
+	app.Cfg().Admin.Bypass = true
+	app.Cfg().Admin.Group = "gepardec-run-admins"
 	token := &OAuthToken{Groups: []string{"gepardec-run-admins"}}
 	a.True(isAdmin(*token, app))
 
@@ -789,9 +789,9 @@ func TestProxyInitialization(t *testing.T) {
 			app.WithConfig()
 
 			// Set URLs
-			app.Cfg.Loki.URL = tt.lokiURL
-			app.Cfg.Thanos.URL = tt.thanosURL
-			app.Cfg.Tempo.URL = tt.tempoURL
+			app.Cfg().Loki.URL = tt.lokiURL
+			app.Cfg().Thanos.URL = tt.thanosURL
+			app.Cfg().Tempo.URL = tt.tempoURL
 
 			// Mock TLS config
 			app.TlS = &tls.Config{InsecureSkipVerify: true}
@@ -828,7 +828,7 @@ func TestProxyInitialization(t *testing.T) {
 func TestProxyUsesDirectReverseProxy(t *testing.T) {
 	app := &App{}
 	app.WithConfig()
-	app.Cfg.Loki.URL = "http://loki:3100"
+	app.Cfg().Loki.URL = "http://loki:3100"
 	app.TlS = &tls.Config{InsecureSkipVerify: true}
 
 	app.WithProxies()
@@ -969,9 +969,9 @@ func TestCreateTransport(t *testing.T) {
 func TestEachUpstreamGetsOwnTransport(t *testing.T) {
 	app := &App{}
 	app.WithConfig()
-	app.Cfg.Loki.URL = "http://loki:3100"
-	app.Cfg.Thanos.URL = "http://thanos:9090"
-	app.Cfg.Tempo.URL = "http://tempo:3200"
+	app.Cfg().Loki.URL = "http://loki:3100"
+	app.Cfg().Thanos.URL = "http://thanos:9090"
+	app.Cfg().Tempo.URL = "http://tempo:3200"
 	app.TlS = &tls.Config{InsecureSkipVerify: true}
 
 	app.WithProxies()

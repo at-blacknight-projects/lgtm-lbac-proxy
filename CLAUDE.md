@@ -73,7 +73,7 @@ go test -bench=. -benchmem -run=^$
 
 | Component | Files | Purpose |
 |-----------|-------|---------|
-| **Core** | `main.go`, `config.go` | App initialization, config with hot-reload |
+| **Core** | `main.go`, `config.go` | App initialization; config read via `a.Cfg()`, hot-reloaded by building and validating a new Config and swapping it in atomically (a rejected reload keeps the old one) |
 | **Auth** | `auth.go` | JWT+JWKS validation, extract username/email/groups |
 | **Static keys** | `statickeys.go` | Optional hashed long-lived keys: `auth.static_keys` (read, → identity, never admin or cluster-wide) and `ingest.static_keys` (write, → writer id); checked before JWT, separate maps |
 | **Labels** | `labelstore.go`, `labelrule.go`, `policyparser.go` | Eager parsing at startup, extended format, rules with operators (=, !=, =~, !~), AND/OR logic, fail-fast validation |

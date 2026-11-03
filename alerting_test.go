@@ -10,10 +10,11 @@ import (
 )
 
 func alertingApp(cfg AlertingConfig, adminGroup string) *App {
-	return &App{Cfg: &Config{
+	return newTestApp(&Config{
 		Alerting: cfg,
 		Admin:    AdminConfig{Group: adminGroup},
-	}}
+	})
+
 }
 
 func TestAlertingAccess(t *testing.T) {
@@ -120,12 +121,13 @@ func registeredRoutes(t *testing.T, router *mux.Router) map[string]bool {
 }
 
 func alertingRoutesApp(enabled bool) *App {
-	return &App{Cfg: &Config{
+	return newTestApp(&Config{
 		Alerting:     AlertingConfig{Enabled: enabled, ViewerGroups: []string{"alert-viewer"}},
 		Thanos:       ThanosConfig{URL: "http://thanos.example.com/prometheus"},
 		Loki:         LokiConfig{URL: "http://loki.example.com"},
 		Alertmanager: AlertmanagerConfig{URL: "http://mimir.example.com", PathPrefix: "/alertmanager"},
-	}}
+	})
+
 }
 
 // The reported failure was a 404 from the router: Grafana asks for these paths and
@@ -190,10 +192,11 @@ func TestAlertingRoutesAbsentWhenDisabled(t *testing.T) {
 // A standalone Alertmanager serves the API at the root, so an empty path prefix must
 // still register the routes there.
 func TestAlertmanagerRoutesWithoutPathPrefix(t *testing.T) {
-	app := &App{Cfg: &Config{
+	app := newTestApp(&Config{
 		Alerting:     AlertingConfig{Enabled: true},
 		Alertmanager: AlertmanagerConfig{URL: "http://alertmanager.example.com", PathPrefix: ""},
-	}}
+	})
+
 	app.e = mux.NewRouter()
 	app.WithAlertmanager()
 
@@ -206,7 +209,7 @@ func TestAlertmanagerRoutesWithoutPathPrefix(t *testing.T) {
 // than being handed the empty result set reserved for authenticated non-holders.
 func TestAlertRouteRequiresAuthentication(t *testing.T) {
 	app := alertingRoutesApp(true)
-	app.Cfg.Web.AuthHeader = "Authorization"
+	app.Cfg().Web.AuthHeader = "Authorization"
 	app.e = mux.NewRouter()
 	app.WithRuler()
 

@@ -86,7 +86,7 @@ func (a *App) WithRoutes() *App {
 // Routes are based on Loki HTTP API Query Endpoints:
 // https://grafana.com/docs/loki/latest/reference/loki-http-api/#query-endpoints
 func (a *App) WithLoki() *App {
-	if a.Cfg.Loki.URL == "" {
+	if a.Cfg().Loki.URL == "" {
 		log.Warn().Msg("Loki URL not set, skipping Loki routes")
 		return a
 	}
@@ -121,15 +121,15 @@ func (a *App) WithLoki() *App {
 		{Url: "/api/v1/query_exemplars", MatchWord: "query"},
 	}
 	lokiRouter := a.e.PathPrefix("/loki").Subrouter()
-	proxyCfg := a.Cfg.GetProxyConfig(a.Cfg.Loki.Proxy)
+	proxyCfg := a.Cfg().GetProxyConfig(a.Cfg().Loki.Proxy)
 	for _, route := range routes {
 		log.Trace().Any("route", route).Msg("Loki route")
 		lokiRouter.HandleFunc(route.Url, handlerWithProxy(route.MatchWord,
 			LogQLEnforcer(struct{}{}),
 			a.lokiProxy,
 			proxyCfg,
-			a.Cfg.Loki.UseMutualTLS,
-			a.Cfg.Loki.Headers,
+			a.Cfg().Loki.UseMutualTLS,
+			a.Cfg().Loki.Headers,
 			a)).Name(route.Url)
 	}
 	return a
@@ -146,7 +146,7 @@ func (a *App) WithLoki() *App {
 // - Thanos uses /api/v1/* exclusively
 // - Tempo uses /api/search, /api/v2/*, /api/metrics/*, /api/echo, /api/traces/*
 func (a *App) WithTempo() *App {
-	if a.Cfg.Tempo.URL == "" {
+	if a.Cfg().Tempo.URL == "" {
 		log.Warn().Msg("Tempo URL not set, skipping Tempo routes")
 		return a
 	}
@@ -172,15 +172,15 @@ func (a *App) WithTempo() *App {
 		{Url: "/api/v2/traces/{traceID}", MatchWord: ""},
 	}
 	tempoRouter := a.e.PathPrefix("").Subrouter()
-	proxyCfg := a.Cfg.GetProxyConfig(a.Cfg.Tempo.Proxy)
+	proxyCfg := a.Cfg().GetProxyConfig(a.Cfg().Tempo.Proxy)
 	for _, route := range routes {
 		log.Trace().Any("route", route).Msg("Tempo route")
 		tempoRouter.HandleFunc(route.Url, handlerWithProxy(route.MatchWord,
 			TraceQLEnforcer(struct{}{}),
 			a.tempoProxy,
 			proxyCfg,
-			a.Cfg.Tempo.UseMutualTLS,
-			a.Cfg.Tempo.Headers,
+			a.Cfg().Tempo.UseMutualTLS,
+			a.Cfg().Tempo.Headers,
 			a)).Name(route.Url)
 	}
 	return a
@@ -192,7 +192,7 @@ func (a *App) WithTempo() *App {
 // Routes are based on Prometheus HTTP API:
 // https://prometheus.io/docs/prometheus/latest/querying/api/
 func (a *App) WithThanos() *App {
-	if a.Cfg.Thanos.URL == "" {
+	if a.Cfg().Thanos.URL == "" {
 		log.Warn().Msg("Thanos URL not set, skipping Thanos routes")
 		return a
 	}
@@ -223,7 +223,7 @@ func (a *App) WithThanos() *App {
 		{Url: "/api/v1/index/stats", MatchWord: "query"},
 	}
 	thanosRouter := a.e.PathPrefix("").Subrouter()
-	proxyCfg := a.Cfg.GetProxyConfig(a.Cfg.Thanos.Proxy)
+	proxyCfg := a.Cfg().GetProxyConfig(a.Cfg().Thanos.Proxy)
 	for _, route := range routes {
 		log.Trace().Any("route", route).Msg("Thanos route")
 		thanosRouter.HandleFunc(route.Url,
@@ -231,8 +231,8 @@ func (a *App) WithThanos() *App {
 				PromQLEnforcer(struct{}{}),
 				a.thanosProxy,
 				proxyCfg,
-				a.Cfg.Thanos.UseMutualTLS,
-				a.Cfg.Thanos.Headers,
+				a.Cfg().Thanos.UseMutualTLS,
+				a.Cfg().Thanos.Headers,
 				a)).Name(route.Url)
 
 	}
@@ -322,12 +322,12 @@ func decideAlertRequest(route AlertRoute, method string, access AlertAccess) ale
 //
 // Prometheus HTTP API: https://prometheus.io/docs/prometheus/latest/querying/api/#rules
 func (a *App) WithRuler() *App {
-	if !a.Cfg.Alerting.Enabled {
+	if !a.Cfg().Alerting.Enabled {
 		log.Info().Msg("Alerting disabled, skipping ruler routes")
 		return a
 	}
 
-	if a.Cfg.Thanos.URL != "" {
+	if a.Cfg().Thanos.URL != "" {
 		// Mimir serves the Prometheus API under a base path; carry that on thanos.url
 		// so these sit at the root alongside the query routes, as Grafana expects.
 		routes := []AlertRoute{
@@ -339,11 +339,11 @@ func (a *App) WithRuler() *App {
 			{Url: "/config/v1/rules/{namespace}/{group}", Methods: []string{http.MethodGet}},
 		}
 		a.registerAlertRoutes(a.e.PathPrefix("").Subrouter(), routes, a.thanosProxy,
-			a.Cfg.GetProxyConfig(a.Cfg.Thanos.Proxy), a.Cfg.Thanos.UseMutualTLS,
-			a.Cfg.Thanos.Headers, "thanos-ruler")
+			a.Cfg().GetProxyConfig(a.Cfg().Thanos.Proxy), a.Cfg().Thanos.UseMutualTLS,
+			a.Cfg().Thanos.Headers, "thanos-ruler")
 	}
 
-	if a.Cfg.Loki.URL != "" {
+	if a.Cfg().Loki.URL != "" {
 		// Loki's ruler serves the Prometheus-compatible API under /prometheus, and its
 		// own configuration API under /loki/api/v1/rules.
 		routes := []AlertRoute{
@@ -354,8 +354,8 @@ func (a *App) WithRuler() *App {
 			{Url: "/loki/api/v1/rules/{namespace}/{group}", Methods: []string{http.MethodGet}},
 		}
 		a.registerAlertRoutes(a.e.PathPrefix("").Subrouter(), routes, a.lokiProxy,
-			a.Cfg.GetProxyConfig(a.Cfg.Loki.Proxy), a.Cfg.Loki.UseMutualTLS,
-			a.Cfg.Loki.Headers, "loki-ruler")
+			a.Cfg().GetProxyConfig(a.Cfg().Loki.Proxy), a.Cfg().Loki.UseMutualTLS,
+			a.Cfg().Loki.Headers, "loki-ruler")
 	}
 
 	return a
@@ -375,10 +375,10 @@ func (a *App) WithRuler() *App {
 //
 // Alertmanager HTTP API: https://prometheus.io/docs/alerting/latest/https/#api
 func (a *App) WithAlertmanager() *App {
-	if !a.Cfg.Alerting.Enabled {
+	if !a.Cfg().Alerting.Enabled {
 		return a
 	}
-	if a.Cfg.Alertmanager.URL == "" {
+	if a.Cfg().Alertmanager.URL == "" {
 		log.Warn().Msg("Alertmanager URL not set, skipping Alertmanager routes")
 		return a
 	}
@@ -395,10 +395,10 @@ func (a *App) WithAlertmanager() *App {
 		{Url: "/api/v2/silence/{id}", Methods: []string{http.MethodGet, http.MethodDelete}, WriteMethods: []string{http.MethodDelete}},
 	}
 
-	router := a.e.PathPrefix(a.Cfg.Alertmanager.PathPrefix).Subrouter()
+	router := a.e.PathPrefix(a.Cfg().Alertmanager.PathPrefix).Subrouter()
 	a.registerAlertRoutes(router, routes, a.alertmanagerProxy,
-		a.Cfg.GetProxyConfig(a.Cfg.Alertmanager.Proxy), a.Cfg.Alertmanager.UseMutualTLS,
-		a.Cfg.Alertmanager.Headers, "alertmanager")
+		a.Cfg().GetProxyConfig(a.Cfg().Alertmanager.Proxy), a.Cfg().Alertmanager.UseMutualTLS,
+		a.Cfg().Alertmanager.Headers, "alertmanager")
 
 	return a
 }
@@ -503,19 +503,19 @@ func handlerWithProxy(matchWord string, enforcer EnforceQL, proxy *httputil.Reve
 }
 
 func setActorHeaderLogQL(r *http.Request, token OAuthToken, a *App) error {
-	if a.Cfg.Loki.ActorHeader != "" {
+	if a.Cfg().Loki.ActorHeader != "" {
 		data := fmt.Sprintf("%s%s", token.PreferredUsername, token.Email)
 		encoded := base64.StdEncoding.EncodeToString([]byte(data))
-		r.Header.Set(a.Cfg.Loki.ActorHeader, encoded)
+		r.Header.Set(a.Cfg().Loki.ActorHeader, encoded)
 	}
 	return nil
 }
 
 func setActorHeaderPromQL(r *http.Request, token OAuthToken, a *App) error {
-	if a.Cfg.Thanos.ActorHeader != "" {
+	if a.Cfg().Thanos.ActorHeader != "" {
 		data := fmt.Sprintf("%s%s", token.PreferredUsername, token.Email)
 		encoded := base64.StdEncoding.EncodeToString([]byte(data))
-		r.Header.Set(a.Cfg.Thanos.ActorHeader, encoded)
+		r.Header.Set(a.Cfg().Thanos.ActorHeader, encoded)
 	}
 	return nil
 }

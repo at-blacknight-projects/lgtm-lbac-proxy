@@ -53,7 +53,7 @@ func (a *App) WithLabelStore() *App {
 		return a
 	}
 	a.LabelStore = &FileLabelStore{}
-	err := a.LabelStore.Connect(a.Cfg.LabelStore)
+	err := a.LabelStore.Connect(a.Cfg().LabelStore)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Error connecting to labelstore")
 	}
