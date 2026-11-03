@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"runtime"
-	"strings"
 
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/gorilla/mux"
@@ -252,23 +251,18 @@ func (a *App) WithProxies() *App {
 	return a
 }
 
-// singleJoiningSlash joins two URL path segments with exactly one separating slash.
-// Copied from the standard library's net/http/httputil (where it is unexported), so the
-// custom Director can prepend a configured upstream base path the same way
-// NewSingleHostReverseProxy does.
-func singleJoiningSlash(a, b string) string {
-	aslash := strings.HasSuffix(a, "/")
-	bslash := strings.HasPrefix(b, "/")
-	switch {
-	case aslash && bslash:
-		return a + b[1:]
-	case !aslash && !bslash:
-		return a + "/" + b
-	}
-	return a + b
-}
+// ctxKey is the type of the request-context keys this package sets. A private type keeps
+// them from colliding with keys set by other packages.
+type ctxKey int
 
-// createProxy creates a reverse proxy with custom Director, ErrorHandler, and ModifyResponse.
+const (
+	// ctxKeyUsername and ctxKeyEmail carry the caller's identity from the route handlers
+	// to the proxy's Rewrite, which uses them for the actor header.
+	ctxKeyUsername ctxKey = iota
+	ctxKeyEmail
+)
+
+// createProxy creates a reverse proxy with custom Rewrite, ErrorHandler, and ModifyResponse.
 // Using direct ReverseProxy instantiation instead of NewSingleHostReverseProxy for better control.
 func (a *App) createProxy(targetURL string, actorHeader string, transport *http.Transport, upstream string) *httputil.ReverseProxy {
 	target, err := url.Parse(targetURL)
@@ -277,38 +271,35 @@ func (a *App) createProxy(targetURL string, actorHeader string, transport *http.
 	}
 
 	proxy := &httputil.ReverseProxy{
-		// Custom Director for URL rewriting and actor header injection
-		Director: func(req *http.Request) {
-			req.URL.Scheme = target.Scheme
-			req.URL.Host = target.Host
-			req.Host = target.Host
-
-			// Honor a base path on the configured upstream URL so it is prepended to the
-			// incoming request path. This is required for upstreams that mount the
-			// Prometheus-compatible API under a prefix — notably Mimir, which serves it
+		// Custom Rewrite for URL rewriting and actor header injection
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			// Route to the upstream. SetURL also prepends a base path on the configured
+			// upstream URL to the incoming path. This is required for upstreams that mount
+			// the Prometheus-compatible API under a prefix — notably Mimir, which serves it
 			// at /prometheus/api/v1/* (vs Thanos at /api/v1/*) — and also enables
-			// sub-path-mounted Loki/Tempo. Backwards-compatible: when the upstream URL has
-			// no base path ("" or "/"), the incoming path is forwarded unchanged.
-			if target.Path != "" && target.Path != "/" {
-				req.URL.Path = singleJoiningSlash(target.Path, req.URL.Path)
-				if req.URL.RawPath != "" {
-					req.URL.RawPath = singleJoiningSlash(target.Path, req.URL.RawPath)
-				}
-			}
+			// sub-path-mounted Loki/Tempo. With no base path ("" or "/") the incoming path
+			// is forwarded unchanged.
+			pr.SetURL(target)
+
+			// Keep the client's X-Forwarded-For chain and append this hop, as the Director
+			// did. X-Forwarded-Host and -Proto are now set from the request the proxy
+			// received, instead of passing through whatever the client sent.
+			pr.Out.Header["X-Forwarded-For"] = pr.In.Header["X-Forwarded-For"]
+			pr.SetXForwarded()
 
 			// Inject actor header if configured (base64 encoded username for fair usage tracking)
 			if actorHeader != "" {
-				if username, ok := req.Context().Value("username").(string); ok && username != "" {
-					req.Header.Set(actorHeader, username)
-				} else if email, ok := req.Context().Value("email").(string); ok && email != "" {
-					req.Header.Set(actorHeader, email)
+				if username, ok := pr.In.Context().Value(ctxKeyUsername).(string); ok && username != "" {
+					pr.Out.Header.Set(actorHeader, username)
+				} else if email, ok := pr.In.Context().Value(ctxKeyEmail).(string); ok && email != "" {
+					pr.Out.Header.Set(actorHeader, email)
 				}
 			}
 
 			log.Debug().
 				Str("upstream", upstream).
-				Str("method", req.Method).
-				Str("path", req.URL.Path).
+				Str("method", pr.Out.Method).
+				Str("path", pr.Out.URL.Path).
 				Msg("Proxying request")
 		},
 

@@ -204,7 +204,7 @@ func (c *FileLabelStore) loadLabels(v *viper.Viper, configPaths []string) error 
 	if len(parseErrors) > 0 {
 		return fmt.Errorf("INVALID POLICY CONFIGURATION: %d entries failed to parse:\n%s\n\n"+
 			"All policies must be valid before the proxy can start.\n"+
-			"Fix the configuration errors listed above and restart.",
+			"Fix the configuration errors listed above and restart",
 			len(parseErrors), strings.Join(parseErrors, "\n"))
 	}
 

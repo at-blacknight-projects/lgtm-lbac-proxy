@@ -77,11 +77,7 @@ func buildMatcherString(rule LabelRule) string {
 	// For multiple values, use regex operator and combine with |
 	if len(rule.Values) > 1 {
 		value = strings.Join(rule.Values, "|")
-		if operator == OperatorEquals {
-			operator = OperatorRegexMatch
-		} else if operator == OperatorNotEquals {
-			operator = OperatorRegexNoMatch
-		}
+		operator = multiValueOperator(operator)
 	}
 
 	return fmt.Sprintf("%s%s%q", rule.Name, operator, value)
@@ -164,17 +160,6 @@ func validateMatcherWithValues(matcher *labels.Matcher, allowedValues map[string
 	// (this is a complex semantic check that would require analyzing the full boolean logic)
 
 	return nil
-}
-
-// validateMatcher checks if a single matcher complies with the policy rule.
-// Deprecated: Use validateMatcherWithValues instead.
-func validateMatcher(matcher *labels.Matcher, rule *LabelRule) error {
-	// Create a map of allowed values
-	allowedValues := make(map[string]bool)
-	for _, v := range rule.Values {
-		allowedValues[v] = true
-	}
-	return validateMatcherWithValues(matcher, allowedValues)
 }
 
 // buildMatchersFromPolicy creates label matchers from policy rules.
