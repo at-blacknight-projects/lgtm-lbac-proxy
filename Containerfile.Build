@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1
 
 # Build stage
-FROM golang:1.26-alpine AS builder
+# Keep the patch level in step with the toolchain line in go.mod: the official image
+# sets GOTOOLCHAIN=local, so go.mod can't raise the version used here.
+FROM golang:1.26.10-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates tzdata
