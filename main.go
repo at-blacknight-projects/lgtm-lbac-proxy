@@ -40,13 +40,17 @@ type App struct {
 	healthy             bool
 }
 
-var Commit string
+// Version and Commit are stamped at build time with -ldflags "-X main.Version=… -X main.Commit=…".
+var (
+	Version = "dev"
+	Commit  string
+)
 
 func main() {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 	zerolog.ErrorStackMarshaler = pkgerrors.MarshalStack
 	log.Info().Msg("-------Init Proxy-------")
-	log.Info().Msgf("Commit: %s", Commit)
+	log.Info().Str("version", Version).Str("commit", Commit).Msg("Build")
 	log.Debug().Str("go_version", runtime.Version()).Msg("")
 	log.Debug().Str("go_os", runtime.GOOS).Str("go_arch", runtime.GOARCH).Msg("")
 	log.Debug().Str("go_compiler", runtime.Compiler).Msg("")
