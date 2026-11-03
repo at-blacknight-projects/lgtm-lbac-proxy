@@ -3,8 +3,6 @@ package main
 import (
 	"strings"
 	"testing"
-
-	"github.com/prometheus/prometheus/promql/parser"
 )
 
 func TestPromQLEnforcer_Enforce(t *testing.T) {
@@ -303,12 +301,12 @@ func TestPromQLEnforcer_Enforce(t *testing.T) {
 
 			// Parse both got and want to compare semantically
 			// This handles differences in label ordering and whitespace
-			gotExpr, err := parser.ParseExpr(got)
+			gotExpr, err := promqlParser.ParseExpr(got)
 			if err != nil {
 				t.Errorf("EnforceMulti() produced invalid query: %v", err)
 				return
 			}
-			wantExpr, err := parser.ParseExpr(tt.want)
+			wantExpr, err := promqlParser.ParseExpr(tt.want)
 			if err != nil {
 				t.Errorf("Test case has invalid expected query: %v", err)
 				return
