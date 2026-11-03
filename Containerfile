@@ -4,7 +4,7 @@
 # Build the binary first: CGO_ENABLED=0 go build -ldflags="-w -s" -trimpath -o lgtm-lbac-proxy .
 
 # Helper stage to create user and get certificates
-FROM alpine:latest AS prep
+FROM alpine:3.24.3 AS prep
 
 # Create nonroot user
 RUN addgroup -g 65532 -S nonroot && \

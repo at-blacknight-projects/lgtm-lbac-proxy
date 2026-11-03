@@ -5,6 +5,22 @@
 # This is documented configuration, not sensitive data
 AVD-KSV-0109
 
+# KSV-01010: False positive - the flagged keys are not secrets. auth.claims.username and
+# auth.claims.email are JWT claim *names* (e.g. "preferred_username"), and the "key" fields
+# are file paths to mTLS keys mounted from a Secret, never the key material itself.
+KSV-01010
+
+# KSV-0125: Which registries are trusted is the deployer's policy, not the chart's. The
+# default image is this project's own GHCR image, and image.repository is configurable;
+# enforce registry allow-lists with an admission policy in the cluster.
+KSV-0125
+
+# GO-2026-5932: golang.org/x/crypto/openpgp is deprecated/unmaintained. Nothing here
+# imports it (go list -deps has no openpgp package), so it is not in the binary; Trivy
+# flags it only because x/crypto is in the module graph. The only "fix" is an untagged
+# x/crypto pseudo-version; drop this when a tagged x/crypto release carries it.
+GO-2026-5932
+
 # --- grafana/tempo: whole-module advisories with no reachable fix (#6).
 # We import only github.com/grafana/tempo/pkg/traceql (the TraceQL parser, in
 # enforcer_traceql.go). Both CVEs are in Tempo's server components, which are neither
