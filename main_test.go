@@ -229,12 +229,9 @@ func setupTestMainWithPrivateKey() (App, map[string]string, *ecdsa.PrivateKey) {
 		policyCache[cacheKey] = policy
 	}
 
-	cmh := FileLabelStore{
-		parser:      parser,
-		policyCache: policyCache,
-	}
+	cmh := newTestLabelStore(parser, policyCache)
 
-	app.LabelStore = &cmh
+	app.LabelStore = cmh
 	// Set up a mock TLS config for testing (WithTLSConfig() requires system CA files)
 	app.TlS = &tls.Config{
 		InsecureSkipVerify: true,
@@ -658,10 +655,7 @@ func TestGetLabelPolicyMerge(t *testing.T) {
 		policyCache[cacheKey] = policy
 	}
 
-	store := FileLabelStore{
-		parser:      parser,
-		policyCache: policyCache,
-	}
+	store := newTestLabelStore(parser, policyCache)
 
 	// Simulate user with multiple groups
 	identity := UserIdentity{

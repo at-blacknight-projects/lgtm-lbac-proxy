@@ -96,8 +96,7 @@ group4:
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		store := &FileLabelStore{
-			parser:      NewPolicyParser(),
-			policyCache: make(map[string]*LabelPolicy),
+			parser: NewPolicyParser(),
 		}
 		v := viper.NewWithOptions(viper.KeyDelimiter("::"))
 		_ = store.loadLabels(v, []string{tmpDir})
@@ -130,8 +129,7 @@ user` + string(rune('0'+i%10)) + `:
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		store := &FileLabelStore{
-			parser:      NewPolicyParser(),
-			policyCache: make(map[string]*LabelPolicy),
+			parser: NewPolicyParser(),
 		}
 		v := viper.NewWithOptions(viper.KeyDelimiter("::"))
 		_ = store.loadLabels(v, []string{tmpDir})
@@ -167,8 +165,7 @@ user` + string(rune('0'+i%10)) + string(rune('0'+(i/10)%10)) + `:
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		store := &FileLabelStore{
-			parser:      NewPolicyParser(),
-			policyCache: make(map[string]*LabelPolicy),
+			parser: NewPolicyParser(),
 		}
 		v := viper.NewWithOptions(viper.KeyDelimiter("::"))
 		_ = store.loadLabels(v, []string{tmpDir})
@@ -202,8 +199,7 @@ group1:
 	}
 
 	store := &FileLabelStore{
-		parser:      NewPolicyParser(),
-		policyCache: make(map[string]*LabelPolicy),
+		parser: NewPolicyParser(),
 	}
 	v := viper.NewWithOptions(viper.KeyDelimiter("::"))
 	err = store.loadLabels(v, []string{tmpDir})
@@ -259,8 +255,7 @@ group2:
 	}
 
 	store := &FileLabelStore{
-		parser:      NewPolicyParser(),
-		policyCache: make(map[string]*LabelPolicy),
+		parser: NewPolicyParser(),
 	}
 	v := viper.NewWithOptions(viper.KeyDelimiter("::"))
 	err = store.loadLabels(v, []string{tmpDir})
@@ -279,8 +274,9 @@ group2:
 			identity.Groups = []string{"group2"}
 		}
 		// Clear merged cache to force merge operation
-		delete(store.policyCache, "merged:user1:group1")
-		delete(store.policyCache, "merged:user1:group2")
+		// Drop the merged entries so every iteration merges afresh.
+		store.snapshot.Load().merged.Delete("merged:user1:group1")
+		store.snapshot.Load().merged.Delete("merged:user1:group2")
 		_, _ = store.GetLabelPolicy(identity, "namespace")
 	}
 }

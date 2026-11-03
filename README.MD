@@ -165,6 +165,14 @@ healthy. Watch the outcome with:
 - `lgtm_lbac_proxy_config_reloads_total{result="applied"|"rejected"}`
 - `lgtm_lbac_proxy_config_last_reload_successful`: 1, or 0 after a rejected reload
 
+`labels.yaml` reloads the same way. The new file is parsed and validated in full before
+it replaces the policies in one step, and policies merged per user and groups are
+dropped with the old ones. A file that fails to load is logged and the previous policies
+keep serving:
+
+- `lgtm_lbac_proxy_labels_reloads_total{result="applied"|"rejected"}`
+- `lgtm_lbac_proxy_labels_last_reload_successful`
+
 Some settings are read only at startup. They include listeners, ports and certificates,
 the upstreams and their proxy settings, the JWKS sources, the service account token,
 `labelstore.config_paths`, and whether the alerting and ingest routes exist. A reload
