@@ -109,6 +109,17 @@ ingest:
   # write key never reads. Configure HASHES only (see auth.staticKeys).
   staticKeys: {}                # e.g. { "<sha256-hex>": app-b }
   writerHeader: X-Ingest-Writer
+  # How pushes reached the gateway, when it is published through more than one path
+  # (e.g. directly and through a CDN or tunnel). A push carrying an edge's marker header
+  # is labelled with that edge in the ingest metrics; anything else is "direct". A direct
+  # client could send the marker too, so this is for observing traffic, not for access.
+  edges: []
+  #  - name: cloudflare
+  #    header: Cf-Ray                       # added by Cloudflare to every forwarded request
+  #    clientIpHeader: Cf-Connecting-Ip     # optional, logged at debug level
+  # When set, the upstream receives the edge name in this header (overwritten, like the
+  # writer header). Empty = not forwarded.
+  edgeHeader: ""
   maxBodyBytes: 5242880         # cap on the body as sent; the receiver bounds decompression
   # Secret (tls.crt/tls.key) with the listener's server cert, mounted at /etc/secrets/ingest/.
   serverSecretName: ""

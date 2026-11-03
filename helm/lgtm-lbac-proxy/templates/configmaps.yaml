@@ -154,6 +154,19 @@ data:
       server_key: /etc/secrets/ingest/tls.key
       max_body_bytes: {{ .maxBodyBytes | int64 }}
       writer_header: {{ .writerHeader | default "X-Ingest-Writer" | quote }}
+      {{- with .edges }}
+      edges:
+        {{- range . }}
+        - name: {{ .name | quote }}
+          header: {{ .header | quote }}
+          {{- with .clientIpHeader }}
+          client_ip_header: {{ . | quote }}
+          {{- end }}
+        {{- end }}
+      {{- end }}
+      {{- with .edgeHeader }}
+      edge_header: {{ . | quote }}
+      {{- end }}
       writers:
         {{- range $group, $id := .writers }}
         {{ $group | quote }}: {{ $id | quote }}

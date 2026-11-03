@@ -231,6 +231,17 @@ type IngestConfig struct {
 	// multi-tenant backend this can be its tenant header, for example X-Scope-OrgID.
 	WriterHeader string `mapstructure:"writer_header"`
 
+	// Edges say how a push reached the gateway when it is published through more than
+	// one path, for example directly and through a CDN or tunnel. A push carrying an
+	// edge's marker header came through that edge; anything else is "direct". The result
+	// labels the ingest metrics and, with EdgeHeader set, is forwarded upstream. A direct
+	// client could send a marker header itself, so the edge is observational: never base
+	// an access decision on it.
+	Edges []IngestEdge `mapstructure:"edges"`
+	// EdgeHeader, when set, is the request header the upstream receives the edge name in,
+	// overwriting any value the client supplied. Empty = not forwarded.
+	EdgeHeader string `mapstructure:"edge_header"`
+
 	// Per-signal OTLP/HTTP upstreams. A signal with no URL is not routed. The request
 	// path (/v1/metrics, /v1/logs, /v1/traces) is appended to the URL's base path, so a
 	// collector takes its base URL and an OTLP endpoint mounted under a prefix (for
@@ -238,6 +249,14 @@ type IngestConfig struct {
 	Metrics IngestSignalConfig `mapstructure:"metrics"`
 	Logs    IngestSignalConfig `mapstructure:"logs"`
 	Traces  IngestSignalConfig `mapstructure:"traces"`
+}
+
+// IngestEdge is one way pushes can reach the gateway, recognised by a header the edge
+// adds to every request it forwards (Cloudflare adds Cf-Ray).
+type IngestEdge struct {
+	Name           string `mapstructure:"name"`             // label value, e.g. cloudflare
+	Header         string `mapstructure:"header"`           // marker header, e.g. Cf-Ray
+	ClientIPHeader string `mapstructure:"client_ip_header"` // optional: the edge's client address header, e.g. Cf-Connecting-Ip, logged at debug
 }
 
 // IngestSignalConfig is the upstream for one OTLP signal.
