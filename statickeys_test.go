@@ -114,10 +114,11 @@ ingest:
 }
 
 func TestBearerValue(t *testing.T) {
-	app := &App{Cfg: &Config{
+	app := newTestApp(&Config{
 		Web:  WebConfig{AuthHeader: "Authorization"},
 		Auth: AuthConfig{AuthScheme: "Bearer"},
-	}}
+	})
+
 	tests := []struct {
 		name   string
 		header string
@@ -145,8 +146,8 @@ func TestBearerValue(t *testing.T) {
 func staticReadApp(t *testing.T) (*App, map[string]string) {
 	t.Helper()
 	app, tokens := setupTestMain()
-	app.Cfg.Auth.AuthScheme = "Bearer"
-	app.Cfg.Auth.StaticKeys = map[string]string{
+	app.Cfg().Auth.AuthScheme = "Bearer"
+	app.Cfg().Auth.StaticKeys = map[string]string{
 		testKeyHash(readKey):         "group1",
 		testKeyHash("admin-ish-key"): "cluster-wide-entry",
 	}
@@ -193,7 +194,7 @@ func TestGetIdentityFromStaticReadKey(t *testing.T) {
 
 	// Read and write keys are separate maps.
 	t.Run("a write key is not a read key", func(t *testing.T) {
-		app.Cfg.Ingest.StaticKeys = map[string]string{testKeyHash(writeKey): "app-a"}
+		app.Cfg().Ingest.StaticKeys = map[string]string{testKeyHash(writeKey): "app-a"}
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
 		r.Header.Set("Authorization", "Bearer "+writeKey)
 		_, err := getIdentity(r, app)
@@ -249,7 +250,7 @@ func TestStaticWriteKey(t *testing.T) {
 	app, tokens := ingestHandlerApp(t, map[string]string{"group1": "app-a"}, srv.URL, func(c *IngestConfig) {
 		c.StaticKeys = map[string]string{testKeyHash(writeKey): "app-k"}
 	})
-	app.Cfg.Auth.AuthScheme = "Bearer"
+	app.Cfg().Auth.AuthScheme = "Bearer"
 
 	t.Run("key pushes as its writer, with its credential stripped", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/v1/metrics", strings.NewReader("x"))
@@ -275,7 +276,7 @@ func TestStaticWriteKey(t *testing.T) {
 	})
 
 	t.Run("a read key cannot write", func(t *testing.T) {
-		app.Cfg.Auth.StaticKeys = map[string]string{testKeyHash(readKey): "group1"}
+		app.Cfg().Auth.StaticKeys = map[string]string{testKeyHash(readKey): "group1"}
 		req := httptest.NewRequest(http.MethodPost, "/v1/metrics", strings.NewReader("x"))
 		req.Header.Set("Authorization", "Bearer "+readKey)
 		assert.Equal(t, http.StatusForbidden, serveIngest(app, req).Code)

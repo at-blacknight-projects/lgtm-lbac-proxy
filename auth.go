@@ -55,31 +55,31 @@ func (t OAuthToken) ToIdentity() UserIdentity {
 // value from the verified certificate, and be the only path to the proxy.
 func getIdentity(r *http.Request, a *App) (OAuthToken, error) {
 	// Mode B: certificate-based identity + configurable admission (preferred when enabled).
-	if a.Cfg.Auth.ClientCert.Enabled {
-		cert, err := clientCertFromRequest(r, &a.Cfg.Auth.ClientCert)
+	if a.Cfg().Auth.ClientCert.Enabled {
+		cert, err := clientCertFromRequest(r, &a.Cfg().Auth.ClientCert)
 		if err != nil {
 			return OAuthToken{}, err
 		}
 		if cert != nil {
 			claims := extractCertClaims(cert)
-			if err := Admit(claims, a.Cfg.Auth.ClientCert.Admission); err != nil {
+			if err := Admit(claims, a.Cfg().Auth.ClientCert.Admission); err != nil {
 				log.Warn().Err(err).Str("cn", claims.CN).Str("template_oid", claims.TemplateOID).Msg("Client cert admission denied")
 				return OAuthToken{}, err
 			}
-			id := identityFromClaims(claims, a.Cfg.Auth.ClientCert.IdentityFrom)
+			id := identityFromClaims(claims, a.Cfg().Auth.ClientCert.IdentityFrom)
 			if id == "" {
-				return OAuthToken{}, fmt.Errorf("client cert admitted but identity field %q is empty", a.Cfg.Auth.ClientCert.IdentityFrom)
+				return OAuthToken{}, fmt.Errorf("client cert admitted but identity field %q is empty", a.Cfg().Auth.ClientCert.IdentityFrom)
 			}
-			log.Debug().Str("identity", id).Str("field", a.Cfg.Auth.ClientCert.IdentityFrom).Msg("Identity from client certificate")
+			log.Debug().Str("identity", id).Str("field", a.Cfg().Auth.ClientCert.IdentityFrom).Msg("Identity from client certificate")
 			return OAuthToken{PreferredUsername: id}, nil
 		}
 		// No client cert presented — fall through to other auth methods (mixed deployments).
 	}
 
-	if a.Cfg.Auth.TrustedClientHeader.Enabled {
-		cn := strings.TrimSpace(r.Header.Get(a.Cfg.Auth.TrustedClientHeader.CNHeader))
+	if a.Cfg().Auth.TrustedClientHeader.Enabled {
+		cn := strings.TrimSpace(r.Header.Get(a.Cfg().Auth.TrustedClientHeader.CNHeader))
 		if cn != "" {
-			log.Debug().Str("cn", cn).Str("header", a.Cfg.Auth.TrustedClientHeader.CNHeader).Msg("Identity from trusted client header")
+			log.Debug().Str("cn", cn).Str("header", a.Cfg().Auth.TrustedClientHeader.CNHeader).Msg("Identity from trusted client header")
 			return OAuthToken{PreferredUsername: cn}, nil
 		}
 	}
@@ -87,7 +87,7 @@ func getIdentity(r *http.Request, a *App) (OAuthToken, error) {
 	// Static read key: the identity names a labels.yaml entry, carries no groups (so it
 	// is never admin), and is refused cluster-wide access in validateLabelPolicy. A
 	// credential that is not a configured key falls through to JWT validation.
-	if id, ok := staticKeyLookup(a.Cfg.Auth.StaticKeys, bearerValue(r, a)); ok {
+	if id, ok := staticKeyLookup(a.Cfg().Auth.StaticKeys, bearerValue(r, a)); ok {
 		log.Debug().Str("identity", id).Msg("Identity from static key")
 		return OAuthToken{PreferredUsername: id, viaStaticKey: true}, nil
 	}
@@ -97,8 +97,8 @@ func getIdentity(r *http.Request, a *App) (OAuthToken, error) {
 // getToken retrieves the OAuth token from the incoming HTTP request.
 // It extracts, parses, and validates the token from the configured authentication header.
 func getToken(r *http.Request, a *App) (OAuthToken, error) {
-	scheme := strings.TrimSpace(a.Cfg.Auth.AuthScheme)
-	primaryHeader := a.Cfg.Web.AuthHeader
+	scheme := strings.TrimSpace(a.Cfg().Auth.AuthScheme)
+	primaryHeader := a.Cfg().Web.AuthHeader
 	primaryValue := r.Header.Get(primaryHeader)
 	log.Trace().Str("header", primaryHeader).Str("value", primaryValue).Msg("Auth header value")
 
@@ -110,8 +110,8 @@ func getToken(r *http.Request, a *App) (OAuthToken, error) {
 		return parseAndValidateToken(tokenString, a)
 	}
 
-	if a.Cfg.Alert.Enabled {
-		alertHeader := a.Cfg.Alert.TokenHeader
+	if a.Cfg().Alert.Enabled {
+		alertHeader := a.Cfg().Alert.TokenHeader
 		alertValue := r.Header.Get(alertHeader)
 		if alertValue == "" {
 			return OAuthToken{}, fmt.Errorf("no %s header found", primaryHeader)
@@ -186,7 +186,7 @@ func parseJwtToken(tokenString string, a *App) (OAuthToken, *jwt.Token, error) {
 
 	// Issuer check (exact match). Defends against tokens signed by the trusted keys but
 	// issued by an unexpected issuer. Skipped when unset.
-	if want := a.Cfg.Auth.Issuer; want != "" {
+	if want := a.Cfg().Auth.Issuer; want != "" {
 		got, _ := claimsMap["iss"].(string)
 		if got != want {
 			log.Warn().Str("iss", got).Msg("Token issuer not accepted")
@@ -197,30 +197,30 @@ func parseJwtToken(tokenString string, a *App) (OAuthToken, *jwt.Token, error) {
 	// Audience check (any-match). Defends against tokens minted for a different resource
 	// (e.g. an ARM token) that would otherwise pass on signature+expiry alone. Skipped when
 	// unset. `aud` may be a string or an array per the JWT spec.
-	if len(a.Cfg.Auth.Audiences) > 0 {
-		if !audienceMatches(claimsMap["aud"], a.Cfg.Auth.Audiences) {
+	if len(a.Cfg().Auth.Audiences) > 0 {
+		if !audienceMatches(claimsMap["aud"], a.Cfg().Auth.Audiences) {
 			log.Warn().Interface("aud", claimsMap["aud"]).Msg("Token audience not accepted")
 			return oAuthToken, token, fmt.Errorf("invalid audience")
 		}
 	}
 
-	if v, ok := claimsMap[a.Cfg.Web.OAuthUsernameClaim].(string); ok {
+	if v, ok := claimsMap[a.Cfg().Web.OAuthUsernameClaim].(string); ok {
 		oAuthToken.PreferredUsername = v
-		log.Trace().Str("claim", a.Cfg.Web.OAuthUsernameClaim).Str("value", v).Msg("Username claim")
+		log.Trace().Str("claim", a.Cfg().Web.OAuthUsernameClaim).Str("value", v).Msg("Username claim")
 	}
 
-	if v, ok := claimsMap[a.Cfg.Web.OAuthEmailClaim].(string); ok {
+	if v, ok := claimsMap[a.Cfg().Web.OAuthEmailClaim].(string); ok {
 		if !strings.Contains(v, "@") {
-			log.Warn().Str("claim", a.Cfg.Web.OAuthEmailClaim).Str("value", v).Msg("Email does not contain '@', therefore not an email. Could be sus")
+			log.Warn().Str("claim", a.Cfg().Web.OAuthEmailClaim).Str("value", v).Msg("Email does not contain '@', therefore not an email. Could be sus")
 		}
-		log.Trace().Str("claim", a.Cfg.Web.OAuthEmailClaim).Str("value", v).Msg("Email claim")
+		log.Trace().Str("claim", a.Cfg().Web.OAuthEmailClaim).Str("value", v).Msg("Email claim")
 		oAuthToken.Email = v
 	}
 
-	if v, ok := claimsMap[a.Cfg.Web.OAuthGroupName].([]interface{}); ok {
+	if v, ok := claimsMap[a.Cfg().Web.OAuthGroupName].([]interface{}); ok {
 		for _, item := range v {
 			if s, ok := item.(string); ok {
-				log.Trace().Str("claim", a.Cfg.Web.OAuthGroupName).Str("group", s).Msg("Group claim")
+				log.Trace().Str("claim", a.Cfg().Web.OAuthGroupName).Str("group", s).Msg("Group claim")
 				oAuthToken.Groups = append(oAuthToken.Groups, s)
 			}
 		}
@@ -289,7 +289,7 @@ func validateLabelPolicy(token OAuthToken, a *App) (*LabelPolicy, bool, error) {
 }
 
 func isAdmin(token OAuthToken, a *App) bool {
-	return ContainsIgnoreCase(token.Groups, a.Cfg.Admin.Group) && a.Cfg.Admin.Bypass
+	return ContainsIgnoreCase(token.Groups, a.Cfg().Admin.Group) && a.Cfg().Admin.Bypass
 }
 
 // AlertAccess is a caller's level of access to the ruler and Alertmanager routes.
@@ -312,13 +312,13 @@ const (
 // admin.bypass: that flag governs whether admins skip label enforcement on queries, and
 // these routes carry no query to enforce.
 func alertingAccess(token OAuthToken, a *App) AlertAccess {
-	if a.Cfg.Admin.Group != "" && ContainsIgnoreCase(token.Groups, a.Cfg.Admin.Group) {
+	if a.Cfg().Admin.Group != "" && ContainsIgnoreCase(token.Groups, a.Cfg().Admin.Group) {
 		return AlertAccessWrite
 	}
-	if containsAnyIgnoreCase(token.Groups, a.Cfg.Alerting.AdminGroups) {
+	if containsAnyIgnoreCase(token.Groups, a.Cfg().Alerting.AdminGroups) {
 		return AlertAccessWrite
 	}
-	if containsAnyIgnoreCase(token.Groups, a.Cfg.Alerting.ViewerGroups) {
+	if containsAnyIgnoreCase(token.Groups, a.Cfg().Alerting.ViewerGroups) {
 		return AlertAccessRead
 	}
 	return AlertAccessNone

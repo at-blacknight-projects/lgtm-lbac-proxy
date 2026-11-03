@@ -11,13 +11,13 @@ import (
 )
 
 func TestSetActorHeaderLogQL(t *testing.T) {
-	app := &App{
-		Cfg: &Config{
+	app := newTestApp(
+		&Config{
 			Loki: LokiConfig{
 				ActorHeader: "X-Actor",
 			},
-		},
-	}
+		})
+
 	token := OAuthToken{
 		PreferredUsername: "user",
 		Email:             "user@example.com",
@@ -31,13 +31,13 @@ func TestSetActorHeaderLogQL(t *testing.T) {
 }
 
 func TestSetActorHeaderPromQL(t *testing.T) {
-	app := &App{
-		Cfg: &Config{
+	app := newTestApp(
+		&Config{
 			Thanos: ThanosConfig{
 				ActorHeader: "X-Actor",
 			},
-		},
-	}
+		})
+
 	token := OAuthToken{
 		PreferredUsername: "user",
 		Email:             "user@example.com",
@@ -54,7 +54,7 @@ func TestSetActorHeaderPromQL(t *testing.T) {
 // must be answered on the proxy router, without credentials, and follow the
 // same liveness state as /healthz.
 func TestPrometheusHealthRoutes(t *testing.T) {
-	app := &App{Cfg: &Config{}}
+	app := newTestApp(&Config{})
 	app = app.WithHealthz().WithRoutes()
 
 	for _, path := range []string{"/-/healthy", "/-/ready"} {
@@ -87,10 +87,11 @@ func TestPrometheusHealthRoutes(t *testing.T) {
 // The health endpoints must not open a path past authentication: the query API
 // still refuses a caller with no credentials once they are registered.
 func TestPrometheusHealthDoesNotBypassQueryAuth(t *testing.T) {
-	app := &App{Cfg: &Config{
+	app := newTestApp(&Config{
 		Thanos: ThanosConfig{URL: "http://thanos.example.com"},
 		Web:    WebConfig{AuthHeader: "Authorization"},
-	}}
+	})
+
 	app = app.WithHealthz().WithRoutes()
 
 	rec := httptest.NewRecorder()
@@ -99,13 +100,12 @@ func TestPrometheusHealthDoesNotBypassQueryAuth(t *testing.T) {
 }
 
 func TestWithHealthz(t *testing.T) {
-	app := &App{
-		Cfg: &Config{
+	app := newTestApp(
+		&Config{
 			Alert: AlertConfig{
 				Enabled: false,
 			},
-		},
-	}
+		})
 
 	app = app.WithHealthz()
 

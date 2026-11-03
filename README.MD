@@ -150,8 +150,26 @@ server and probe its health before querying. Some refuse to query at all without
 200 from `/-/healthy` — the MinIO console's dashboard is one.
 
 As in Prometheus they report liveness of the proxy process only: no credentials are
-required, no upstream is called, and they share `/healthz`'s state (500 once a
-configuration reload has failed). Every query is still authenticated and enforced.
+required, no upstream is called, and they share `/healthz`'s state. Every query is still
+authenticated and enforced.
+
+### Configuration reload
+
+`config.yaml` is watched. On a change the proxy reads it afresh, migrates and validates
+it exactly as at startup, and only then switches to it in one step, so a request never
+sees a half-applied configuration. If the new file doesn't parse or fails validation,
+the error is logged and **the previous configuration keeps serving**. A bad edit to a
+ConfigMap that every replica mounts never takes them down, and the process stays
+healthy. Watch the outcome with:
+
+- `lgtm_lbac_proxy_config_reloads_total{result="applied"|"rejected"}`
+- `lgtm_lbac_proxy_config_last_reload_successful`: 1, or 0 after a rejected reload
+
+Some settings are read only at startup. They include listeners, ports and certificates,
+the upstreams and their proxy settings, the JWKS sources, the service account token,
+`labelstore.config_paths`, and whether the alerting and ingest routes exist. A reload
+that changes one of them logs which ones need a restart. Everything else (writers,
+static keys, edges, audiences, groups, log level…) applies immediately.
 
 ### OTLP write gateway
 

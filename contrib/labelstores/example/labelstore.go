@@ -19,7 +19,7 @@ type ExampleHandler struct {
 func (e *ExampleHandler) Connect(app interface{}) error {
 	// TODO: Implement your connection logic
 	// Example steps:
-	// 1. Read configuration from app.Cfg
+	// 1. Read configuration from app.Cfg()
 	// 2. Initialize connection to your backend
 	// 3. Verify connection is working
 	// 4. Log connection status

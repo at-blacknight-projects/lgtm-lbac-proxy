@@ -248,7 +248,7 @@ func TestIngestOnlySetsUpNoReadPath(t *testing.T) {
 		Writers: map[string]string{"otlp-writer-app-a": "app-a"},
 	})
 	// No labels.yaml here: loading a label store would be fatal.
-	app.Cfg.LabelStore.ConfigPaths = []string{t.TempDir()}
+	app.Cfg().LabelStore.ConfigPaths = []string{t.TempDir()}
 
 	app.WithLabelStore().WithProxies().WithRoutes().WithIngest()
 
@@ -279,14 +279,15 @@ func TestIngestAlongsideReadPath(t *testing.T) {
 // ingestRoutesApp configures every read upstream and alerting, so the read router has
 // its full route set to compare the write router against.
 func ingestRoutesApp(ingest IngestConfig) *App {
-	return &App{Cfg: &Config{
+	return newTestApp(&Config{
 		Alerting:     AlertingConfig{Enabled: true},
 		Thanos:       ThanosConfig{URL: "http://metrics.example.com/prometheus"},
 		Loki:         LokiConfig{URL: "http://logs.example.com"},
 		Tempo:        TempoConfig{URL: "http://traces.example.com"},
 		Alertmanager: AlertmanagerConfig{URL: "http://alerts.example.com", PathPrefix: "/alertmanager"},
 		Ingest:       ingest,
-	}}
+	})
+
 }
 
 // The write router must serve the push routes and the probe, and nothing else, so the
@@ -367,7 +368,7 @@ func ingestHandlerApp(t *testing.T, writers map[string]string, upstreamURL strin
 	t.Helper()
 	app, tokens := setupTestMain()
 	app.healthy = true
-	app.Cfg.Ingest = IngestConfig{
+	app.Cfg().Ingest = IngestConfig{
 		Enabled:      true,
 		Metrics:      IngestSignalConfig{URL: upstreamURL},
 		Logs:         IngestSignalConfig{URL: upstreamURL},
@@ -375,7 +376,7 @@ func ingestHandlerApp(t *testing.T, writers map[string]string, upstreamURL strin
 		MaxBodyBytes: defaultIngestMaxBodyBytes,
 	}
 	for _, m := range mutate {
-		m(&app.Cfg.Ingest)
+		m(&app.Cfg().Ingest)
 	}
 	app.withIngestProxies()
 	app.WithIngest()
@@ -437,7 +438,7 @@ func TestIngestHandlerAmbiguousWriter(t *testing.T) {
 // Holding the admin group grants nothing on the write path.
 func TestIngestHandlerAdminIsNotAWriter(t *testing.T) {
 	app, tokens := ingestHandlerApp(t, map[string]string{"group1": "app-a"}, okReceiverURL(t))
-	app.Cfg.Admin = AdminConfig{Bypass: true, Group: "admins"}
+	app.Cfg().Admin = AdminConfig{Bypass: true, Group: "admins"}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/metrics", nil)
 	req.Header.Set("Authorization", "Bearer "+tokens["adminUserToken"])
@@ -450,7 +451,7 @@ func TestIngestHandlerAdminIsNotAWriter(t *testing.T) {
 // with trusted-header identity enabled for the read path.
 func TestIngestHandlerIgnoresTrustedClientHeader(t *testing.T) {
 	app, _ := ingestHandlerApp(t, map[string]string{"svc-writer": "app-a"}, okReceiverURL(t))
-	app.Cfg.Auth.TrustedClientHeader = TrustedClientHeaderConfig{Enabled: true, CNHeader: "X-Client-CN"}
+	app.Cfg().Auth.TrustedClientHeader = TrustedClientHeaderConfig{Enabled: true, CNHeader: "X-Client-CN"}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/metrics", nil)
 	req.Header.Set("X-Client-CN", "svc-writer")
@@ -520,7 +521,7 @@ func writeTestKeyPair(t *testing.T, dir string) (certPath, keyPath string) {
 
 func TestBuildIngestServer(t *testing.T) {
 	certPath, keyPath := writeTestKeyPair(t, t.TempDir())
-	app := &App{Cfg: &Config{Ingest: IngestConfig{ServerCert: certPath, ServerKey: keyPath}}}
+	app := newTestApp(&Config{Ingest: IngestConfig{ServerCert: certPath, ServerKey: keyPath}})
 
 	srv, err := app.buildIngestServer(":0", mux.NewRouter())
 	require.NoError(t, err)
@@ -538,7 +539,7 @@ func TestBuildIngestServer(t *testing.T) {
 // End to end over a real TLS listener: the probe answers, a read route does not.
 func TestIngestServerOverTLS(t *testing.T) {
 	app, _ := ingestHandlerApp(t, map[string]string{"group1": "app-a"}, okReceiverURL(t))
-	app.Cfg.Ingest.ServerCert, app.Cfg.Ingest.ServerKey = writeTestKeyPair(t, t.TempDir())
+	app.Cfg().Ingest.ServerCert, app.Cfg().Ingest.ServerKey = writeTestKeyPair(t, t.TempDir())
 
 	srv, err := app.buildIngestServer("127.0.0.1:0", app.w)
 	require.NoError(t, err)
@@ -571,10 +572,11 @@ func TestIngestServerOverTLS(t *testing.T) {
 
 func TestBuildIngestServerMissingKeyPair(t *testing.T) {
 	dir := t.TempDir()
-	app := &App{Cfg: &Config{Ingest: IngestConfig{
+	app := newTestApp(&Config{Ingest: IngestConfig{
 		ServerCert: filepath.Join(dir, "missing.crt"),
 		ServerKey:  filepath.Join(dir, "missing.key"),
-	}}}
+	}})
+
 	_, err := app.buildIngestServer(":0", mux.NewRouter())
 	assert.ErrorContains(t, err, "ingest server keypair")
 }

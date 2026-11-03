@@ -108,7 +108,7 @@ func (c IngestConfig) signalURL(signal string) string {
 
 // ingestOnly reports whether the process runs as a write gateway alone.
 func (a *App) ingestOnly() bool {
-	return a.Cfg.Ingest.Enabled && a.Cfg.Ingest.Only
+	return a.Cfg().Ingest.Enabled && a.Cfg().Ingest.Only
 }
 
 // signalProxy returns the per-upstream proxy settings for signal.
@@ -318,16 +318,16 @@ func ingestWriter(token OAuthToken, cfg IngestConfig) (string, error) {
 // The transport trusts the root pool WithTLSConfig built, rather than a.TlS, which the
 // read upstreams are given but which is never populated.
 func (a *App) withIngestProxies() {
-	if !a.Cfg.Ingest.Enabled {
+	if !a.Cfg().Ingest.Enabled {
 		return
 	}
 	a.ingestProxies = map[string]*httputil.ReverseProxy{}
 	for _, signal := range ingestSignals {
-		target := a.Cfg.Ingest.signalURL(signal)
+		target := a.Cfg().Ingest.signalURL(signal)
 		if target == "" {
 			continue
 		}
-		proxyCfg := a.Cfg.GetProxyConfig(a.Cfg.Ingest.signalProxy(signal))
+		proxyCfg := a.Cfg().GetProxyConfig(a.Cfg().Ingest.signalProxy(signal))
 		proxy := a.createProxy(target, "", a.createTransport(proxyCfg, a.ingestTLSConfig()), "ingest-"+signal)
 		proxy.ErrorHandler = ingestErrorHandler(signal)
 		a.ingestProxies[signal] = proxy
@@ -343,7 +343,7 @@ func (a *App) ingestTLSConfig() *tls.Config {
 	return &tls.Config{
 		MinVersion:         tls.VersionTLS12,
 		RootCAs:            a.rootCAs,
-		InsecureSkipVerify: a.Cfg.Web.TLSVerifySkip,
+		InsecureSkipVerify: a.Cfg().Web.TLSVerifySkip,
 	}
 }
 
@@ -351,7 +351,7 @@ func (a *App) ingestTLSConfig() *tls.Config {
 // the read router so that the write listener cannot serve a read route, and the read
 // listeners cannot serve a push route.
 func (a *App) WithIngest() *App {
-	if !a.Cfg.Ingest.Enabled {
+	if !a.Cfg().Ingest.Enabled {
 		return a
 	}
 	w := mux.NewRouter()
@@ -370,7 +370,7 @@ func (a *App) WithIngest() *App {
 	}).Methods(http.MethodGet).Name("ingest /healthz")
 
 	for _, signal := range ingestSignals {
-		if a.Cfg.Ingest.signalURL(signal) == "" {
+		if a.Cfg().Ingest.signalURL(signal) == "" {
 			continue
 		}
 		path := "/v1/" + signal
@@ -394,7 +394,7 @@ func (a *App) WithIngest() *App {
 // guarantee that the upstream cannot be reached except through the gateway.
 func ingestHandler(signal string, a *App) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		in := a.Cfg.Ingest
+		in := a.Cfg().Ingest
 		// Classified before authentication, so refused pushes are labelled too.
 		edge, client := in.ingestEdge(r)
 
@@ -449,11 +449,11 @@ func ingestHandler(signal string, a *App) http.HandlerFunc {
 		}
 		// The caller's credentials are for the gateway, not the upstream.
 		r.Header.Del("Authorization")
-		if a.Cfg.Auth.AuthHeader != "" {
-			r.Header.Del(a.Cfg.Auth.AuthHeader)
+		if a.Cfg().Auth.AuthHeader != "" {
+			r.Header.Del(a.Cfg().Auth.AuthHeader)
 		}
-		if a.Cfg.Alert.TokenHeader != "" {
-			r.Header.Del(a.Cfg.Alert.TokenHeader)
+		if a.Cfg().Alert.TokenHeader != "" {
+			r.Header.Del(a.Cfg().Alert.TokenHeader)
 		}
 
 		log.Debug().Str("writer", writer).Str("signal", signal).Bool("static_key", viaKey).
@@ -532,7 +532,7 @@ func (s *statusRecorder) Unwrap() http.ResponseWriter {
 // buildIngestServer constructs the write listener: TLS with the ingest server
 // certificate, no client certificate requested, and bounded timeouts.
 func (a *App) buildIngestServer(addr string, handler http.Handler) (*http.Server, error) {
-	in := a.Cfg.Ingest
+	in := a.Cfg().Ingest
 	cert, err := tls.LoadX509KeyPair(in.ServerCert, in.ServerKey)
 	if err != nil {
 		return nil, fmt.Errorf("loading ingest server keypair: %w", err)

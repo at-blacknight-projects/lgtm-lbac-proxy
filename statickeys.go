@@ -32,7 +32,7 @@ var errStaticKeyClusterWide = errors.New("static-key identities cannot have clus
 // bearerValue returns the credential presented in the configured auth header and
 // scheme, or "" when it is absent or malformed.
 func bearerValue(r *http.Request, a *App) string {
-	header := a.Cfg.Web.AuthHeader
+	header := a.Cfg().Web.AuthHeader
 	if header == "" {
 		header = "Authorization"
 	}
@@ -40,7 +40,7 @@ func bearerValue(r *http.Request, a *App) string {
 	if v == "" {
 		return ""
 	}
-	token, err := extractTokenValue(v, strings.TrimSpace(a.Cfg.Auth.AuthScheme), header)
+	token, err := extractTokenValue(v, strings.TrimSpace(a.Cfg().Auth.AuthScheme), header)
 	if err != nil {
 		return ""
 	}
