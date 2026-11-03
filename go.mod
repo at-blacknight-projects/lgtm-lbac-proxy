@@ -1,4 +1,4 @@
-module github.com/binhnguyenduc/lgtm-lbac-proxy
+module github.com/at-blacknight-projects/lgtm-lbac-proxy
 
 go 1.26.0
 
