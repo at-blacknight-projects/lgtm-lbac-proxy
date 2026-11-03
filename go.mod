@@ -2,6 +2,8 @@ module github.com/binhnguyenduc/lgtm-lbac-proxy
 
 go 1.26.0
 
+toolchain go1.26.10
+
 require (
 	github.com/MicahParks/jwkset v0.11.0
 	github.com/MicahParks/keyfunc/v3 v3.7.0
