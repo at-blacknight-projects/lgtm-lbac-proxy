@@ -1,0 +1,37 @@
+name: Release
+
+# Releases from the shared ci-templates app workflow. A push to alpha cuts a
+# pre-release (0.2.0-alpha.N); a push to main cuts a stable release. In order:
+# version from conventional commits → chart version/appVersion bumped → image built,
+# scanned, pushed, signed and attested → chart published to the helm-charts index →
+# tag and GitHub release last. Branches and plugins are in .releaserc.json.
+
+on:
+  push:
+    branches: [alpha, main]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  packages: write
+  id-token: write
+  attestations: write
+  security-events: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    uses: at-blacknight-projects/ci-templates/.github/workflows/app-release.yml@v0
+    with:
+      images: '[{"name": "", "context": ".", "file": "Containerfile.Build"}]'
+      charts: helm/lgtm-lbac-proxy
+      # Consumers install from the classic index; no second (OCI) copy of the chart.
+      oci-registry: none
+      index-repo: at-blacknight-projects/helm-charts
+    secrets:
+      app-id: ${{ secrets.RELEASE_APP_ID }}
+      app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
