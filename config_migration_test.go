@@ -6,10 +6,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func strPtr(s string) *string {
-	return &s
-}
-
 // TestMigrateAuthConfig_NewConfigOnly tests loading configuration with only the new auth section
 func TestMigrateAuthConfig_NewConfigOnly(t *testing.T) {
 	app := &App{

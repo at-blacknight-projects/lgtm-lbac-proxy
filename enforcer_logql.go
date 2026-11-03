@@ -78,11 +78,7 @@ func buildLogQLQueryFromPolicy(policy LabelPolicy) string {
 		// Combine multiple values with regex OR
 		if len(rule.Values) > 1 {
 			value = strings.Join(rule.Values, "|")
-			if operator == OperatorEquals {
-				operator = OperatorRegexMatch
-			} else if operator == OperatorNotEquals {
-				operator = OperatorRegexNoMatch
-			}
+			operator = multiValueOperator(operator)
 		}
 
 		matchers = append(matchers, fmt.Sprintf("%s%s\"%s\"", rule.Name, operator, value))
@@ -146,14 +142,4 @@ func validateMatcherAgainstAllowedValues(matcher *labels.Matcher, allowedValues 
 	}
 
 	return nil
-}
-
-// validateMatcherAgainstRule checks if a matcher's values are allowed by the rule.
-// Deprecated: Use validateMatcherAgainstAllowedValues instead.
-func validateMatcherAgainstRule(matcher *labels.Matcher, rule LabelRule) error {
-	allowedValues := make(map[string]bool)
-	for _, v := range rule.Values {
-		allowedValues[v] = true
-	}
-	return validateMatcherAgainstAllowedValues(matcher, allowedValues)
 }

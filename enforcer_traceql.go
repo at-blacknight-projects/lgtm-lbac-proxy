@@ -122,11 +122,7 @@ func buildRuleFilter(rule LabelRule) string {
 
 	// For multiple values with = or !=, convert to regex
 	if len(rule.Values) > 1 {
-		if operator == OperatorEquals {
-			operator = OperatorRegexMatch
-		} else if operator == OperatorNotEquals {
-			operator = OperatorRegexNoMatch
-		}
+		operator = multiValueOperator(operator)
 	}
 
 	// Build value expression

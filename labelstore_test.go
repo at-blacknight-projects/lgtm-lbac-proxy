@@ -351,9 +351,10 @@ func TestConsolidateDuplicateLabels_MultipleLabels(t *testing.T) {
 	// Find environment and cluster rules
 	var envRule, clusterRule *LabelRule
 	for i := range result {
-		if result[i].Name == "cluster" {
+		switch result[i].Name {
+		case "cluster":
 			clusterRule = &result[i]
-		} else if result[i].Name == "environment" {
+		case "environment":
 			envRule = &result[i]
 		}
 	}
@@ -607,9 +608,10 @@ GrafanaUAT:
 	// Find rules by name
 	var envRule, clusterRule *LabelRule
 	for i := range policy.Rules {
-		if policy.Rules[i].Name == "environment" {
+		switch policy.Rules[i].Name {
+		case "environment":
 			envRule = &policy.Rules[i]
-		} else if policy.Rules[i].Name == "cluster" {
+		case "cluster":
 			clusterRule = &policy.Rules[i]
 		}
 	}

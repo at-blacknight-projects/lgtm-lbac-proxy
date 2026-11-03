@@ -140,9 +140,16 @@ func setupTestMainWithPrivateKey() (App, map[string]string, *ecdsa.PrivateKey) {
 		tokens[jwk.name] = token
 	}
 
-	// Base64url encoding
-	x := base64.RawURLEncoding.EncodeToString(pubkey.X.Bytes())
-	y := base64.RawURLEncoding.EncodeToString(pubkey.Y.Bytes())
+	// Base64url encoding of the fixed-width coordinates (RFC 7518 6.2.1.2). Bytes returns
+	// the uncompressed point 0x04 || X || Y, 32 bytes each on P-256; big.Int.Bytes would
+	// drop leading zeros and give a short coordinate for some keys.
+	point, err := pubkey.Bytes()
+	if err != nil {
+		fmt.Printf("Failed to encode public key: %s\n", err)
+		return App{}, nil, nil
+	}
+	x := base64.RawURLEncoding.EncodeToString(point[1:33])
+	y := base64.RawURLEncoding.EncodeToString(point[33:65])
 
 	// Set up the JWKS server
 	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -830,9 +837,9 @@ func TestProxyUsesDirectReverseProxy(t *testing.T) {
 		t.Fatal("Loki proxy should be initialized")
 	}
 
-	// Verify that proxy has custom Director, ErrorHandler, and Transport
-	if app.lokiProxy.Director == nil {
-		t.Error("Expected custom Director function, got nil")
+	// Verify that proxy has custom Rewrite, ErrorHandler, and Transport
+	if app.lokiProxy.Rewrite == nil {
+		t.Error("Expected custom Rewrite function, got nil")
 	}
 	if app.lokiProxy.ErrorHandler == nil {
 		t.Error("Expected custom ErrorHandler function, got nil")

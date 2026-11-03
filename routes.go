@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/http/pprof"
-	"net/url"
 
 	"github.com/rs/zerolog/log"
 
@@ -445,9 +444,9 @@ func alertHandler(route AlertRoute, proxy *httputil.ReverseProxy, proxyCfg Proxy
 			return
 		}
 
-		// Matches handlerWithProxy: the Director reads these for actor header injection.
-		ctx = context.WithValue(ctx, "username", oauthToken.PreferredUsername)
-		ctx = context.WithValue(ctx, "email", oauthToken.Email)
+		// Matches handlerWithProxy: the proxy's Rewrite reads these for actor header injection.
+		ctx = context.WithValue(ctx, ctxKeyUsername, oauthToken.PreferredUsername)
+		ctx = context.WithValue(ctx, ctxKeyEmail, oauthToken.Email)
 		r = r.WithContext(ctx)
 
 		setHeaders(r, tls, headers, a.ServiceAccountToken)
@@ -481,9 +480,9 @@ func handlerWithProxy(matchWord string, enforcer EnforceQL, proxy *httputil.Reve
 			return
 		}
 
-		// Store user information in context for actor header injection in Director function
-		ctx = context.WithValue(ctx, "username", oauthToken.PreferredUsername)
-		ctx = context.WithValue(ctx, "email", oauthToken.Email)
+		// Store user information in context for actor header injection in the proxy's Rewrite
+		ctx = context.WithValue(ctx, ctxKeyUsername, oauthToken.PreferredUsername)
+		ctx = context.WithValue(ctx, ctxKeyEmail, oauthToken.Email)
 		r = r.WithContext(ctx)
 
 		if skip {
@@ -503,65 +502,6 @@ func handlerWithProxy(matchWord string, enforcer EnforceQL, proxy *httputil.Reve
 	}
 }
 
-// handler function orchestrates the request flow through the proxy, comprising
-// authentication, conditional enforcement, and forwarding to the upstream server.
-// This is the legacy handler kept for backward compatibility during migration.
-// DEPRECATED: Use handlerWithProxy instead for better performance.
-func handler(matchWord string, enforcer EnforceQL, dsURL string, tls bool, headers map[string]string, a *App) func(http.ResponseWriter, *http.Request) {
-	upstreamURL, err := url.Parse(dsURL)
-	if err != nil {
-		log.Fatal().Err(err).Str("url", dsURL).Msg("Error parsing URL")
-	}
-	return func(w http.ResponseWriter, r *http.Request) {
-		oauthToken, err := getIdentity(r, a)
-		if err != nil {
-			logAndWriteError(w, http.StatusForbidden, err, "")
-		}
-
-		// Policy-based enforcement (only method supported)
-		policy, skip, err := validateLabelPolicy(oauthToken, a)
-		if err != nil {
-			logAndWriteError(w, http.StatusForbidden, err, "")
-			return
-		}
-
-		if skip {
-			streamUp(w, r, upstreamURL, tls, headers, a)
-			return
-		}
-
-		err = enforceRequest(r, enforcer, policy, matchWord)
-		if err != nil {
-			logAndWriteError(w, http.StatusForbidden, err, "")
-			return
-		}
-
-		if _, ok := enforcer.(LogQLEnforcer); ok {
-			err := setActorHeaderLogQL(r, oauthToken, a)
-			if err != nil {
-				logAndWriteError(w, http.StatusForbidden, err, "")
-				return
-			}
-		}
-		if _, ok := enforcer.(PromQLEnforcer); ok {
-			err := setActorHeaderPromQL(r, oauthToken, a)
-			if err != nil {
-				logAndWriteError(w, http.StatusForbidden, err, "")
-				return
-			}
-		}
-		if _, ok := enforcer.(TraceQLEnforcer); ok {
-			err := setActorHeaderTraceQL(r, oauthToken, a)
-			if err != nil {
-				logAndWriteError(w, http.StatusForbidden, err, "")
-				return
-			}
-		}
-
-		streamUp(w, r, upstreamURL, tls, headers, a)
-	}
-}
-
 func setActorHeaderLogQL(r *http.Request, token OAuthToken, a *App) error {
 	if a.Cfg.Loki.ActorHeader != "" {
 		data := fmt.Sprintf("%s%s", token.PreferredUsername, token.Email)
@@ -578,23 +518,6 @@ func setActorHeaderPromQL(r *http.Request, token OAuthToken, a *App) error {
 		r.Header.Set(a.Cfg.Thanos.ActorHeader, encoded)
 	}
 	return nil
-}
-
-func setActorHeaderTraceQL(r *http.Request, token OAuthToken, a *App) error {
-	if a.Cfg.Tempo.ActorHeader != "" {
-		data := fmt.Sprintf("%s%s", token.PreferredUsername, token.Email)
-		encoded := base64.StdEncoding.EncodeToString([]byte(data))
-		r.Header.Set(a.Cfg.Tempo.ActorHeader, encoded)
-	}
-	return nil
-}
-
-// streamUp forwards the provided HTTP request to the specified upstream URL using
-// a reverse proxy.It serves the upstream content back to the original client.
-func streamUp(w http.ResponseWriter, r *http.Request, upstreamURL *url.URL, tls bool, headers map[string]string, a *App) {
-	setHeaders(r, tls, headers, a.ServiceAccountToken)
-	proxy := httputil.NewSingleHostReverseProxy(upstreamURL)
-	proxy.ServeHTTP(w, r)
 }
 
 // setHeaders modifies the HTTP request headers to set the Authorization and

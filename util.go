@@ -43,11 +43,7 @@ func ruleToMatcher(rule LabelRule) *labels.Matcher {
 	// For multiple values, combine with regex OR
 	if len(rule.Values) > 1 {
 		value = strings.Join(rule.Values, "|")
-		if operator == OperatorEquals {
-			operator = OperatorRegexMatch
-		} else if operator == OperatorNotEquals {
-			operator = OperatorRegexNoMatch
-		}
+		operator = multiValueOperator(operator)
 	}
 
 	// Map operator to MatchType

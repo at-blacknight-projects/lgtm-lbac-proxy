@@ -14,7 +14,7 @@ import (
 // OAuthToken represents the structure of an OAuth token.
 // It holds user-related information extracted from the token.
 type OAuthToken struct {
-	Groups            []string `json:"-,omitempty"`
+	Groups            []string `json:"-"`
 	PreferredUsername string   `json:"preferred_username"`
 	Email             string   `json:"email"`
 	jwt.RegisteredClaims
