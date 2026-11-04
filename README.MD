@@ -2,26 +2,89 @@
 
 **Label-Based Access Control for the LGTM Stack** (Loki, Grafana, Tempo, Mimir/Prometheus)
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/at-blacknight-projects/lgtm-lbac-proxy)](https://goreportcard.com/report/github.com/at-blacknight-projects/lgtm-lbac-proxy)
+[![Release](https://img.shields.io/github/v/release/at-blacknight-projects/lgtm-lbac-proxy?sort=semver&label=release)](https://github.com/at-blacknight-projects/lgtm-lbac-proxy/releases/latest)
+[![Alpha release](https://img.shields.io/github/v/release/at-blacknight-projects/lgtm-lbac-proxy?include_prereleases&sort=semver&filter=*-alpha.*&label=alpha)](https://github.com/at-blacknight-projects/lgtm-lbac-proxy/releases)
 [![Go Reference](https://pkg.go.dev/badge/github.com/at-blacknight-projects/lgtm-lbac-proxy.svg)](https://pkg.go.dev/github.com/at-blacknight-projects/lgtm-lbac-proxy)
-[![Release](https://img.shields.io/github/v/release/at-blacknight-projects/lgtm-lbac-proxy?include_prereleases)](https://github.com/at-blacknight-projects/lgtm-lbac-proxy/releases)
-![License](https://img.shields.io/github/license/at-blacknight-projects/lgtm-lbac-proxy)
+[![License](https://img.shields.io/github/license/at-blacknight-projects/lgtm-lbac-proxy)](LICENSE)
+
+> **This is a diverged fork of a diverged fork.** It started as
+> [binhnguyenduc/lgtm-lbac-proxy](https://github.com/binhnguyenduc/lgtm-lbac-proxy), which
+> itself forked [gepaplexx/multena-proxy](https://github.com/gepaplexx/multena-proxy). Each fork
+> has diverged from its parent, and nothing here is sent upstream. The Go module, image,
+> Helm chart and version numbers are this repository's own; see [Project lineage](#project-lineage).
 
 ---
 
 ## 📢 Notice
 
-### Origin and Acknowledgments
+### Project lineage
 
-This project originated from [multena-proxy](https://github.com/gepaplexx/multena-proxy) by **Gepardec**, which provided the foundational architecture for multi-tenancy proxy with label-based access control.
+```
+gepaplexx/multena-proxy                        original (Gepardec)
+└── binhnguyenduc/lgtm-lbac-proxy              fork: full LGTM stack, multi-label policies, TraceQL
+    └── at-blacknight-projects/lgtm-lbac-proxy fork of the fork: this repository
+```
 
-**Original Repository**: https://github.com/gepaplexx/multena-proxy
+Each step is a hard fork, not a mirror. This repository branched from binhnguyenduc's `main`
+at `006d076` (2025-11-04). Neither parent's changes are merged in automatically, and none of
+this repository's changes are sent upstream.
 
-We extend our sincere gratitude to the Gepardec team for their pioneering work in bringing label-based access control to observability stacks. Their original implementation established excellent patterns that influenced our approach.
+| | multena-proxy | binhnguyenduc/lgtm-lbac-proxy | **This repository** |
+|---|---|---|---|
+| Go module | `github.com/gepaplexx/multena-proxy` | `github.com/binhnguyenduc/lgtm-lbac-proxy` | `github.com/at-blacknight-projects/lgtm-lbac-proxy` |
+| Image | `ghcr.io/gepaplexx/multena-proxy` | `ghcr.io/binhnguyenduc/lgtm-lbac-proxy` | `ghcr.io/at-blacknight-projects/lgtm-lbac-proxy` |
+| Helm chart | `gp-multena` | `lgtm-lbac-proxy` | `lgtm-lbac-proxy` from `https://at-blacknight-projects.github.io/helm-charts/` |
+| Versions | its own | up to `v0.15.x` | restarted: `v0.1.0`, then `v0.2.0-alpha.N` |
 
-### Why an Independent Project?
+**Version numbers are not comparable across the forks.** This repository's `v0.2.0-alpha.N`
+is newer than binhnguyenduc's `v0.15.x`, despite the lower number. The feature notes below
+that say "v0.9.0" to "v0.14.0" refer to binhnguyenduc's releases.
 
-**LGTM LBAC Proxy** has evolved as an **independent project** with significant architectural changes and new capabilities that go beyond the original scope:
+#### Releases
+
+| Branch | Versions | Notes |
+|---|---|---|
+| `alpha` (default) | `0.2.0-alpha.N`, GitHub pre-releases | Active: every merged `feat`/`fix` cuts a release |
+| `main` | `0.x.y`, GitHub releases | The only one so far, `v0.1.0`, predates the module path change |
+
+Images are published as `ghcr.io/at-blacknight-projects/lgtm-lbac-proxy:<version>`, and charts
+to the Helm repository above, with the same version.
+
+#### What this fork adds
+
+On top of binhnguyenduc/lgtm-lbac-proxy:
+
+- **OTLP write gateway**: an authenticated OTLP/HTTP ingest listener with group-gated writers.
+  It forwards a writer header and an ingest-edge label, and can run in an ingest-only release
+  with no read access. See [OTLP write gateway](#otlp-write-gateway).
+- **Alerting**: ruler and Alertmanager endpoints proxied with group-based access.
+- **Authentication**:
+  - client-certificate (mTLS) identity with configurable admission
+  - JWT audience and issuer validation
+  - optional static keys for reads and writes
+- **Safe hot reload**: config and labels changes are built, validated and swapped atomically.
+  A bad file is rejected and the previous config keeps serving. Reload metrics are exported.
+- **Prometheus compatibility**: `/-/healthy` and `/-/ready` on the proxy port. A configured
+  upstream base path, such as Mimir's `/prometheus`, is honoured.
+- **Helm**: an ingest listener, ingest-only releases and `extraManifests`.
+- **Supply chain**:
+  - built with Go 1.26
+  - dependencies kept past known advisories, with a govulncheck- and Trivy-gated CI
+  - releases cut by semantic-release
+  - images with SBOMs, build-provenance attestations and keyless cosign signatures
+
+#### Acknowledgments
+
+This project originated from [multena-proxy](https://github.com/gepaplexx/multena-proxy) by
+**Gepardec**, which provided the foundational architecture for a multi-tenancy proxy with
+label-based access control. [binhnguyenduc/lgtm-lbac-proxy](https://github.com/binhnguyenduc/lgtm-lbac-proxy)
+extended it to the full LGTM stack. Our thanks to both.
+
+### How lgtm-lbac-proxy differs from multena-proxy
+
+The changes in this section were made in binhnguyenduc/lgtm-lbac-proxy, and this repository
+keeps them. **LGTM LBAC Proxy** has significant architectural changes and new capabilities
+beyond the original scope:
 
 #### Core Philosophy Differences
 
@@ -459,12 +522,17 @@ graph TD
 ### Binary
 
 ```bash
-# Build and install the latest release (Go 1.26+)
-go install github.com/at-blacknight-projects/lgtm-lbac-proxy@latest
+# Build and install the latest alpha (Go 1.26+)
+go install github.com/at-blacknight-projects/lgtm-lbac-proxy@alpha
 
 # Run with config
 lgtm-lbac-proxy
 ```
+
+Don't use `@latest` for now. It resolves to `v0.1.0`, which still declares the old
+`github.com/binhnguyenduc/lgtm-lbac-proxy` module path, so `go install` refuses it. That changes
+once `main` makes a release under this module path. Binaries built with `go install` report
+version `dev`; the release images carry the real version.
 
 ### Docker
 
@@ -481,14 +549,24 @@ Use a version from the [package's tags](https://github.com/at-blacknight-project
 ### Kubernetes (Helm)
 
 ```bash
-# Install from local chart
+# Install from the chart repository (pre-releases need --devel or an explicit --version)
+helm repo add lgtm-lbac https://at-blacknight-projects.github.io/helm-charts/
+helm install lgtm-lbac-proxy lgtm-lbac/lgtm-lbac-proxy --devel \
+  --namespace observability \
+  --create-namespace \
+  --set auth.jwksCertUrl=https://your-oauth.com/certs \
+  --set thanos.url=https://thanos-query:9091 \
+  --set loki.url=https://loki-query:3100 \
+  --set tempo.url=https://tempo-query:3200
+
+# Or install from a local checkout
 helm install lgtm-lbac-proxy ./helm/lgtm-lbac-proxy \
   --namespace observability \
   --create-namespace \
-  --set proxy.web.jwksCertUrl=https://your-oauth.com/certs \
-  --set proxy.thanos.url=https://thanos-query:9091 \
-  --set proxy.loki.url=https://loki-query:3100 \
-  --set proxy.tempo.url=https://tempo-query:3200
+  --set auth.jwksCertUrl=https://your-oauth.com/certs \
+  --set thanos.url=https://thanos-query:9091 \
+  --set loki.url=https://loki-query:3100 \
+  --set tempo.url=https://tempo-query:3200
 
 # Create labels ConfigMap
 kubectl create configmap lgtm-lbac-proxy-labels \
@@ -805,7 +883,7 @@ A migration tool is provided to automatically convert simple format to extended 
 
 ```bash
 # Build and install the migration tool (Go 1.26+)
-go install github.com/at-blacknight-projects/lgtm-lbac-proxy/cmd/migrate-labels@latest
+go install github.com/at-blacknight-projects/lgtm-lbac-proxy/cmd/migrate-labels@alpha
 
 # Convert your labels file
 migrate-labels -input labels.yaml -output labels-extended.yaml -tenant-label namespace
@@ -974,13 +1052,13 @@ The project includes a production-ready Helm chart for Kubernetes deployment.
 helm install lgtm-lbac-proxy ./helm/lgtm-lbac-proxy \
   --namespace observability \
   --create-namespace \
-  --set proxy.auth.jwksCertUrl=https://oauth.example.com/certs \
-  --set proxy.auth.claims.username=preferred_username \
-  --set proxy.auth.claims.email=email \
-  --set proxy.auth.claims.groups=groups \
-  --set proxy.thanos.url=https://thanos-querier.monitoring.svc:9091 \
-  --set proxy.loki.url=https://loki-query-frontend.logging.svc:3100 \
-  --set proxy.tempo.url=https://tempo-query-frontend.tracing.svc:3200
+  --set auth.jwksCertUrl=https://oauth.example.com/certs \
+  --set auth.claims.username=preferred_username \
+  --set auth.claims.email=email \
+  --set auth.claims.groups=groups \
+  --set thanos.url=https://thanos-querier.monitoring.svc:9091 \
+  --set loki.url=https://loki-query-frontend.logging.svc:3100 \
+  --set tempo.url=https://tempo-query-frontend.tracing.svc:3200
 
 # Create labels ConfigMap with extended format
 cat <<EOF | kubectl apply -f -
@@ -1185,8 +1263,12 @@ If you're migrating from the original multena-proxy, see [MIGRATION.md](MIGRATIO
 ### Naming Changes
 
 - **Binary name**: `multena-proxy` → `lgtm-lbac-proxy`
-- **Docker image**: `ghcr.io/gepaplexx/multena-proxy` → `ghcr.io/binhnguyenduc/lgtm-lbac-proxy`
-- **Helm chart**: `gp-multena` → `lgtm-lbac-proxy`
+- **Docker image**: `ghcr.io/gepaplexx/multena-proxy` → `ghcr.io/binhnguyenduc/lgtm-lbac-proxy` → `ghcr.io/at-blacknight-projects/lgtm-lbac-proxy`
+- **Helm chart**: `gp-multena` → `lgtm-lbac-proxy`, now from `https://at-blacknight-projects.github.io/helm-charts/`
+- **Go module**: `github.com/binhnguyenduc/lgtm-lbac-proxy` → `github.com/at-blacknight-projects/lgtm-lbac-proxy`. Update import paths if you build against the packages.
+
+Coming from binhnguyenduc/lgtm-lbac-proxy rather than multena-proxy, only the image, chart
+repository and module path change. Configuration and label formats are the same.
 
 ### Breaking Changes Since Fork
 
@@ -1230,9 +1312,10 @@ If you're migrating from the original multena-proxy, see [MIGRATION.md](MIGRATIO
 Contributions are welcome! This is an independent project focused on LGTM stack support.
 
 1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
+2. Create a feature branch from `alpha`
+3. Make your changes, using [conventional commits](https://www.conventionalcommits.org/)
+   (they decide the next version)
+4. Submit a pull request into `alpha`, with a conventional-commit title
 
 ---
 
@@ -1245,6 +1328,7 @@ This project is licensed under the GNU Affero General Public License v3.0 - see 
 ## Acknowledgments
 
 - **Original Project**: [multena-proxy](https://github.com/gepaplexx/multena-proxy) by Gepardec
+- **Parent fork**: [binhnguyenduc/lgtm-lbac-proxy](https://github.com/binhnguyenduc/lgtm-lbac-proxy), which extended it to the full LGTM stack
 - **Contributors**: Thank you to everyone who has contributed to making LGTM stack observability more secure
 
 ---
