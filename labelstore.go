@@ -6,8 +6,12 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
@@ -48,8 +52,15 @@ type Labelstore interface {
 // It assigns the connected LabelStore to the App instance and returns it.
 // If an error occurs during the connection, it logs a fatal error.
 func (a *App) WithLabelStore() *App {
+	if a.ingestOnly() {
+		log.Info().Msg("Ingest-only: no label store")
+		// No labels.yaml is ever reloaded, so report the "none has happened yet" value
+		// rather than the gauge's zero, which reads as a rejected reload.
+		labelsLastReloadSuccessful.Set(1)
+		return a
+	}
 	a.LabelStore = &FileLabelStore{}
-	err := a.LabelStore.Connect(a.Cfg.LabelStore)
+	err := a.LabelStore.Connect(a.Cfg().LabelStore)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Error connecting to labelstore")
 	}
@@ -59,15 +70,43 @@ func (a *App) WithLabelStore() *App {
 // FileLabelStore provides file-based label store with eager policy parsing.
 // All policies are parsed and validated during initialization/reload,
 // eliminating on-demand parsing overhead and ensuring fail-fast validation.
+//
+// Requests and the file watcher share it without locks on the hot path: each load of
+// labels.yaml builds a complete policySnapshot off to the side and publishes it with one
+// atomic store, and a request reads the snapshot once and uses only that.
 type FileLabelStore struct {
-	parser      *PolicyParser           // Parser for converting raw YAML to policies
-	policyCache map[string]*LabelPolicy // Cache of eagerly-parsed policies (user:username, group:groupname)
+	parser   *PolicyParser                  // Parser for converting raw YAML to policies
+	snapshot atomic.Pointer[policySnapshot] // the current labels.yaml, parsed
 }
 
+// maxMergedPolicies bounds the merged-policy cache of one snapshot. It grows by one
+// entry per distinct user+groups combination; past the bound, merges are computed per
+// request and not cached, so an unusual identity mix can't grow memory without limit.
+const maxMergedPolicies = 10000
+
+// policySnapshot is one loaded labels.yaml. entries is never modified after publication.
+// merged caches the policy merged for each user+groups combination; it belongs to the
+// snapshot, so a reload drops it together with the entries it was computed from.
+type policySnapshot struct {
+	entries     map[string]*LabelPolicy // "entry:<user or group>" -> parsed policy
+	merged      sync.Map                // "merged:<user>:<groups>" -> *LabelPolicy
+	mergedCount atomic.Int64
+}
+
+var (
+	labelsReloads = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "lgtm_lbac_proxy_labels_reloads_total",
+		Help: "labels.yaml reloads, by result: applied, or rejected (the previous policies keep serving).",
+	}, []string{"result"})
+	labelsLastReloadSuccessful = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "lgtm_lbac_proxy_labels_last_reload_successful",
+		Help: "1 if the last labels.yaml reload was applied (or none has happened yet), 0 if it was rejected.",
+	})
+)
+
 func (c *FileLabelStore) Connect(config LabelStoreConfig) error {
-	// Initialize parser and cache
+	// Initialize parser
 	c.parser = NewPolicyParser()
-	c.policyCache = make(map[string]*LabelPolicy)
 
 	v := viper.NewWithOptions(viper.KeyDelimiter("::"))
 	v.SetConfigName("labels")
@@ -87,21 +126,25 @@ func (c *FileLabelStore) Connect(config LabelStoreConfig) error {
 	// We pass the config paths and viper instance to loadLabels
 	err = c.loadLabels(v, config.ConfigPaths)
 	if err != nil {
-		log.Fatal().Err(err).Msg("Error while loading label configuration")
-		return err
+		return fmt.Errorf("loading label configuration: %w", err)
 	}
+	labelsLastReloadSuccessful.Set(1)
 
-	// Watch for configuration changes
+	// Watch for configuration changes. loadLabels reads labels.yaml itself, so the
+	// watcher is only a trigger. A reload that fails is logged and counted and the
+	// previous policies keep serving: a bad labels.yaml pushed to every replica must not
+	// exit them all.
 	v.OnConfigChange(func(e fsnotify.Event) {
-		log.Info().Str("file", e.Name).Msg("Config file changed")
-		err = v.MergeInConfig()
-		if err != nil {
-			log.Fatal().Err(err).Msg("Error while reloading config file")
+		log.Info().Str("file", e.Name).Msg("Labels file changed")
+		if err := c.loadLabels(v, config.ConfigPaths); err != nil {
+			labelsReloads.WithLabelValues(reloadRejected).Inc()
+			labelsLastReloadSuccessful.Set(0)
+			log.Error().Err(err).Msg("Labels reload rejected; still serving the previous policies")
+			return
 		}
-		err = c.loadLabels(v, config.ConfigPaths)
-		if err != nil {
-			log.Fatal().Err(err).Msg("Error while reloading label configuration")
-		}
+		labelsReloads.WithLabelValues(reloadApplied).Inc()
+		labelsLastReloadSuccessful.Set(1)
+		log.Info().Msg("Labels reloaded")
 	})
 	v.WatchConfig()
 
@@ -172,8 +215,8 @@ func (c *FileLabelStore) loadLabels(v *viper.Viper, configPaths []string) error 
 			"See cmd/migrate-labels/README.md for detailed instructions", simpleFormatCount)
 	}
 
-	// Clear policy cache on reload - prepare for eager parsing
-	c.policyCache = make(map[string]*LabelPolicy)
+	// Build the new entries off to the side; nothing is published until all parse.
+	entries := make(map[string]*LabelPolicy, len(rawData))
 
 	// Eager parsing: Parse all policies during initialization
 	// This provides fail-fast validation and eliminates on-demand parsing overhead
@@ -192,7 +235,7 @@ func (c *FileLabelStore) loadLabels(v *viper.Viper, configPaths []string) error 
 		// Store parsed policy with simple cache key format
 		// Use prefixes to distinguish users from groups
 		cacheKey := "entry:" + key
-		c.policyCache[cacheKey] = policy
+		entries[cacheKey] = policy
 		parsedCount++
 	}
 
@@ -200,10 +243,12 @@ func (c *FileLabelStore) loadLabels(v *viper.Viper, configPaths []string) error 
 	if len(parseErrors) > 0 {
 		return fmt.Errorf("INVALID POLICY CONFIGURATION: %d entries failed to parse:\n%s\n\n"+
 			"All policies must be valid before the proxy can start.\n"+
-			"Fix the configuration errors listed above and restart.",
+			"Fix the configuration errors listed above and restart",
 			len(parseErrors), strings.Join(parseErrors, "\n"))
 	}
 
+	// Publish in one step. Requests holding the previous snapshot finish with it.
+	c.snapshot.Store(&policySnapshot{entries: entries})
 	log.Debug().Int("parsedCount", parsedCount).Msg("Labels loaded and parsed eagerly")
 	return nil
 }
@@ -215,11 +260,18 @@ func (c *FileLabelStore) GetLabelPolicy(identity UserIdentity, defaultLabel stri
 	username := identity.Username
 	groups := identity.Groups
 
+	// One snapshot for the whole lookup, so a concurrent reload can't mix entries from
+	// two versions of labels.yaml into one merged policy.
+	snap := c.snapshot.Load()
+	if snap == nil {
+		return nil, fmt.Errorf("label store not loaded")
+	}
+
 	// Check cache for merged policy (user + specific group combination)
 	// Merged policies are cached per unique user+groups combination for performance
 	mergedCacheKey := "merged:" + username + ":" + strings.Join(groups, ",")
-	if cached, ok := c.policyCache[mergedCacheKey]; ok {
-		return cached, nil
+	if cached, ok := snap.merged.Load(mergedCacheKey); ok {
+		return cached.(*LabelPolicy), nil
 	}
 
 	// Collect pre-parsed policies from cache (user + groups)
@@ -228,14 +280,14 @@ func (c *FileLabelStore) GetLabelPolicy(identity UserIdentity, defaultLabel stri
 
 	// Look up user policy
 	userCacheKey := "entry:" + username
-	if userPolicy, ok := c.policyCache[userCacheKey]; ok {
+	if userPolicy, ok := snap.entries[userCacheKey]; ok {
 		policies = append(policies, userPolicy)
 	}
 
 	// Look up group policies
 	for _, group := range groups {
 		groupCacheKey := "entry:" + group
-		if groupPolicy, ok := c.policyCache[groupCacheKey]; ok {
+		if groupPolicy, ok := snap.entries[groupCacheKey]; ok {
 			policies = append(policies, groupPolicy)
 		}
 	}
@@ -255,8 +307,15 @@ func (c *FileLabelStore) GetLabelPolicy(identity UserIdentity, defaultLabel stri
 		}
 	}
 
-	// Cache the merged policy for this user+groups combination
-	c.policyCache[mergedCacheKey] = mergedPolicy
+	// Cache the merged policy for this user+groups combination, up to the bound. Two
+	// requests may compute the same merge at once; LoadOrStore keeps the first, and both
+	// results are equal anyway.
+	if snap.mergedCount.Load() < maxMergedPolicies {
+		if actual, loaded := snap.merged.LoadOrStore(mergedCacheKey, mergedPolicy); loaded {
+			return actual.(*LabelPolicy), nil
+		}
+		snap.mergedCount.Add(1)
+	}
 
 	return mergedPolicy, nil
 }

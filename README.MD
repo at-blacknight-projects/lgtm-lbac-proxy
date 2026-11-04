@@ -2,27 +2,89 @@
 
 **Label-Based Access Control for the LGTM Stack** (Loki, Grafana, Tempo, Mimir/Prometheus)
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/binhnguyenduc/lgtm-lbac-proxy)](https://goreportcard.com/report/github.com/binhnguyenduc/lgtm-lbac-proxy)
-[![Build Status](https://img.shields.io/github/actions/workflow/status/binhnguyenduc/lgtm-lbac-proxy/release.yml?label=build)](https://github.com/binhnguyenduc/lgtm-lbac-proxy/actions/workflows/release.yml)
-[![GoDoc](https://godoc.org/github.com/binhnguyenduc/lgtm-lbac-proxy?status.svg)](https://godoc.org/github.com/binhnguyenduc/lgtm-lbac-proxy)
-[![Release](https://img.shields.io/github/v/release/binhnguyenduc/lgtm-lbac-proxy)](https://github.com/binhnguyenduc/lgtm-lbac-proxy/releases/latest)
-![License](https://img.shields.io/github/license/binhnguyenduc/lgtm-lbac-proxy)
+[![Release](https://img.shields.io/github/v/release/at-blacknight-projects/lgtm-lbac-proxy?sort=semver&label=release)](https://github.com/at-blacknight-projects/lgtm-lbac-proxy/releases/latest)
+[![Alpha release](https://img.shields.io/github/v/release/at-blacknight-projects/lgtm-lbac-proxy?include_prereleases&sort=semver&filter=*-alpha.*&label=alpha)](https://github.com/at-blacknight-projects/lgtm-lbac-proxy/releases)
+[![Go Reference](https://pkg.go.dev/badge/github.com/at-blacknight-projects/lgtm-lbac-proxy.svg)](https://pkg.go.dev/github.com/at-blacknight-projects/lgtm-lbac-proxy)
+[![License](https://img.shields.io/github/license/at-blacknight-projects/lgtm-lbac-proxy)](LICENSE)
+
+> **This is a diverged fork of a diverged fork.** It started as
+> [binhnguyenduc/lgtm-lbac-proxy](https://github.com/binhnguyenduc/lgtm-lbac-proxy), which
+> itself forked [gepaplexx/multena-proxy](https://github.com/gepaplexx/multena-proxy). Each fork
+> has diverged from its parent, and nothing here is sent upstream. The Go module, image,
+> Helm chart and version numbers are this repository's own; see [Project lineage](#project-lineage).
 
 ---
 
 ## 📢 Notice
 
-### Origin and Acknowledgments
+### Project lineage
 
-This project originated from [multena-proxy](https://github.com/gepaplexx/multena-proxy) by **Gepardec**, which provided the foundational architecture for multi-tenancy proxy with label-based access control.
+```
+gepaplexx/multena-proxy                        original (Gepardec)
+└── binhnguyenduc/lgtm-lbac-proxy              fork: full LGTM stack, multi-label policies, TraceQL
+    └── at-blacknight-projects/lgtm-lbac-proxy fork of the fork: this repository
+```
 
-**Original Repository**: https://github.com/gepaplexx/multena-proxy
+Each step is a hard fork, not a mirror. This repository branched from binhnguyenduc's `main`
+at `006d076` (2025-11-04). Neither parent's changes are merged in automatically, and none of
+this repository's changes are sent upstream.
 
-We extend our sincere gratitude to the Gepardec team for their pioneering work in bringing label-based access control to observability stacks. Their original implementation established excellent patterns that influenced our approach.
+| | multena-proxy | binhnguyenduc/lgtm-lbac-proxy | **This repository** |
+|---|---|---|---|
+| Go module | `github.com/gepaplexx/multena-proxy` | `github.com/binhnguyenduc/lgtm-lbac-proxy` | `github.com/at-blacknight-projects/lgtm-lbac-proxy` |
+| Image | `ghcr.io/gepaplexx/multena-proxy` | `ghcr.io/binhnguyenduc/lgtm-lbac-proxy` | `ghcr.io/at-blacknight-projects/lgtm-lbac-proxy` |
+| Helm chart | `gp-multena` | `lgtm-lbac-proxy` | `lgtm-lbac-proxy` from `https://at-blacknight-projects.github.io/helm-charts/` |
+| Versions | its own | up to `v0.15.x` | restarted: `v0.1.0`, then `v0.2.0-alpha.N` |
 
-### Why an Independent Project?
+**Version numbers are not comparable across the forks.** This repository's `v0.2.0-alpha.N`
+is newer than binhnguyenduc's `v0.15.x`, despite the lower number. The feature notes below
+that say "v0.9.0" to "v0.14.0" refer to binhnguyenduc's releases.
 
-**LGTM LBAC Proxy** has evolved as an **independent project** with significant architectural changes and new capabilities that go beyond the original scope:
+#### Releases
+
+| Branch | Versions | Notes |
+|---|---|---|
+| `alpha` (default) | `0.2.0-alpha.N`, GitHub pre-releases | Active: every merged `feat`/`fix` cuts a release |
+| `main` | `0.x.y`, GitHub releases | The only one so far, `v0.1.0`, predates the module path change |
+
+Images are published as `ghcr.io/at-blacknight-projects/lgtm-lbac-proxy:<version>`, and charts
+to the Helm repository above, with the same version.
+
+#### What this fork adds
+
+On top of binhnguyenduc/lgtm-lbac-proxy:
+
+- **OTLP write gateway**: an authenticated OTLP/HTTP ingest listener with group-gated writers.
+  It forwards a writer header and an ingest-edge label, and can run in an ingest-only release
+  with no read access. See [OTLP write gateway](#otlp-write-gateway).
+- **Alerting**: ruler and Alertmanager endpoints proxied with group-based access.
+- **Authentication**:
+  - client-certificate (mTLS) identity with configurable admission
+  - JWT audience and issuer validation
+  - optional static keys for reads and writes
+- **Safe hot reload**: config and labels changes are built, validated and swapped atomically.
+  A bad file is rejected and the previous config keeps serving. Reload metrics are exported.
+- **Prometheus compatibility**: `/-/healthy` and `/-/ready` on the proxy port. A configured
+  upstream base path, such as Mimir's `/prometheus`, is honoured.
+- **Helm**: an ingest listener, ingest-only releases and `extraManifests`.
+- **Supply chain**:
+  - built with Go 1.26
+  - dependencies kept past known advisories, with a govulncheck- and Trivy-gated CI
+  - releases cut by semantic-release
+  - images with SBOMs, build-provenance attestations and keyless cosign signatures
+
+#### Acknowledgments
+
+This project originated from [multena-proxy](https://github.com/gepaplexx/multena-proxy) by
+**Gepardec**, which provided the foundational architecture for a multi-tenancy proxy with
+label-based access control. [binhnguyenduc/lgtm-lbac-proxy](https://github.com/binhnguyenduc/lgtm-lbac-proxy)
+extended it to the full LGTM stack. Our thanks to both.
+
+### How lgtm-lbac-proxy differs from multena-proxy
+
+The changes in this section were made in binhnguyenduc/lgtm-lbac-proxy, and this repository
+keeps them. **LGTM LBAC Proxy** has significant architectural changes and new capabilities
+beyond the original scope:
 
 #### Core Philosophy Differences
 
@@ -110,6 +172,7 @@ The proxy intercepts queries to Prometheus/Thanos, Loki, and Tempo, validates JW
 - ✅ **Logging**: Loki (LogQL enforcement)
 - ✅ **Traces**: Tempo (TraceQL enforcement) 🆕
 - ✅ **Alerting**: ruler rules/alerts + Alertmanager API (group-based access) 🆕
+- ✅ **OTLP ingest**: token-authenticated OTLP/HTTP write gateway (opt-in) 🆕
 - ⏳ **Profiles**: Planned for future release
 
 The ruler and Alertmanager endpoints return whole rule groups, alert instances and
@@ -132,13 +195,295 @@ alertmanager:
 A caller in none of those groups reads an empty result set from the rules endpoints
 rather than an error, so a UI that loads them unprompted renders clean.
 
-Neither *configuration* API — the ruler's, nor the Cortex/Mimir Alertmanager's — is
-proxied. Rules, contact points and the routing tree stay read-only, leaving whatever
-manages them as code authoritative. Point Grafana's Alertmanager data source at
+The ruler's *configuration* API is proxied for `GET` only — a UI needs it to open a
+single rule group, since listing groups and opening one are different endpoints — while
+the write methods stay unrouted, so rules remain read-only. The Cortex/Mimir
+Alertmanager's configuration API is not proxied at all, keeping contact points and the
+routing tree as-code. Point Grafana's Alertmanager data source at
 `<proxy>/alertmanager` with `implementation: prometheus`, which asks for exactly the
 `/api/v2/*` endpoints above; the `mimir` implementation additionally requests the
 configuration API at `/api/v1/alerts` on the root, where it would collide with the
 ruler's endpoint of the same name.
+
+### Prometheus health endpoints
+
+`GET`/`HEAD /-/healthy` and `/-/ready` are answered on the proxy port (and the mTLS
+port, which serves the same router) for clients that treat the proxy as a Prometheus
+server and probe its health before querying. Some refuse to query at all without a
+200 from `/-/healthy` — the MinIO console's dashboard is one.
+
+As in Prometheus they report liveness of the proxy process only: no credentials are
+required, no upstream is called, and they share `/healthz`'s state. Every query is still
+authenticated and enforced.
+
+### Configuration reload
+
+`config.yaml` is watched. On a change the proxy reads it afresh, migrates and validates
+it exactly as at startup, and only then switches to it in one step, so a request never
+sees a half-applied configuration. If the new file doesn't parse or fails validation,
+the error is logged and **the previous configuration keeps serving**. A bad edit to a
+ConfigMap that every replica mounts never takes them down, and the process stays
+healthy. Watch the outcome with:
+
+- `lgtm_lbac_proxy_config_reloads_total{result="applied"|"rejected"}`
+- `lgtm_lbac_proxy_config_last_reload_successful`: 1, or 0 after a rejected reload
+
+`labels.yaml` reloads the same way. The new file is parsed and validated in full before
+it replaces the policies in one step, and policies merged per user and groups are
+dropped with the old ones. A file that fails to load is logged and the previous policies
+keep serving:
+
+- `lgtm_lbac_proxy_labels_reloads_total{result="applied"|"rejected"}`
+- `lgtm_lbac_proxy_labels_last_reload_successful`
+
+Some settings are read only at startup. They include listeners, ports and certificates,
+the upstreams and their proxy settings, the JWKS sources, the service account token,
+`labelstore.config_paths`, and whether the alerting and ingest routes exist. A reload
+that changes one of them logs which ones need a restart. Everything else (writers,
+static keys, edges, audiences, groups, log level…) applies immediately.
+
+### OTLP write gateway
+
+An optional, separate listener accepts OTLP/HTTP pushes from callers holding a token,
+and forwards them to an OTLP receiver with the caller's identity attached. It is off
+unless `ingest.enabled` is set, and it serves only:
+
+| Route | Purpose |
+|-------|---------|
+| `POST /v1/metrics`, `POST /v1/logs`, `POST /v1/traces` | OTLP/HTTP push, each only when that signal has an upstream |
+| `GET /healthz` | Unauthenticated health probe for an edge or load balancer |
+
+No read route is served on it. How a push is handled:
+
+1. **JWT only.** The token is validated as on the read path (JWKS, `issuer`,
+   `audiences`). Client certificates and the trusted CN header are not identities on
+   this listener.
+2. **Writer resolution.** `writers` maps a group from the token's groups claim to a
+   *writer id*. Exactly one distinct id must match. A caller whose groups map to two
+   different ids is refused, and the admin group is not a writer unless listed.
+3. **Forwarding.** The body is streamed to the signal's upstream **unchanged**
+   (`Content-Type` and `Content-Encoding` pass through, capped at `max_body_bytes`).
+   The writer id is sent in `writer_header`, replacing any value the client set. The
+   caller's token is not forwarded. The upstream's status and body come back as-is.
+
+The upstream is expected to derive tenancy from the writer header, so **it must be
+reachable only through the gateway**, for example a receiver port that a NetworkPolicy
+admits from the gateway's pods alone. Anything that can reach it directly can claim any
+writer.
+
+```yaml
+ingest:
+  enabled: true
+  port: 8444
+  server_cert: /etc/secrets/ingest/tls.crt
+  server_key: /etc/secrets/ingest/tls.key
+  writer_header: X-Ingest-Writer   # default
+  max_body_bytes: 5242880           # default; the receiver bounds decompressed size
+  writers:
+    otlp-writer-app-a: app-a
+    otlp-writer-app-b: app-b
+  metrics:
+    url: http://otel-gateway-receiver.observability.svc:4320   # /v1/metrics is appended
+  logs:
+    url: http://otel-gateway-receiver.observability.svc:4320
+  # traces: { url: ... }            # unset = not routed (404)
+```
+
+**Upstream options.**
+
+*A multi-tenant backend* can take the writer id as its tenant directly, with no receiver
+config. For example, set `writer_header: X-Scope-OrgID` and point the signals at a
+multi-tenant Mimir, Loki or Tempo distributor's OTLP endpoints (e.g.
+`http://mimir-distributor:8080/otlp`).
+
+*An OpenTelemetry Collector or Alloy receiver* can turn the header into resource
+attributes. Copy it from client metadata, drop anything that arrives without it, and
+set `service.name`. In Alloy:
+
+```alloy
+otelcol.receiver.otlp "gateway" {
+  http {
+    endpoint         = "0.0.0.0:4320"
+    include_metadata = true          // makes request headers available as metadata.*
+  }
+  output { metrics = [otelcol.processor.attributes.writer.input] }
+}
+
+otelcol.processor.attributes "writer" {
+  action {
+    key          = "ingest.writer"
+    from_context = "metadata.x-ingest-writer"
+    action       = "upsert"
+  }
+  output { metrics = [otelcol.processor.filter.writer.input] }
+}
+
+// Fail closed: no writer header, no data.
+otelcol.processor.filter "writer" {
+  metrics { datapoint = [`attributes["ingest.writer"] == nil`] }
+  output  { metrics = [otelcol.processor.transform.writer.input] }
+}
+
+otelcol.processor.transform "writer" {
+  metric_statements {
+    context    = "datapoint"
+    statements = [
+      `set(resource.attributes["service.name"], attributes["ingest.writer"])`,
+      `delete_key(attributes, "ingest.writer")`,
+    ]
+  }
+  output { metrics = [/* your tenancy stamping and exporters */] }
+}
+```
+
+Logs follow the same shape, using the `log` context and filtering on `log_record`.
+Attributes the receiver derives tenancy or labels from belong in that pipeline too,
+deleted or overwritten. That is receiver policy, not the gateway's.
+
+**Deployment layouts.** The Helm chart supports both:
+
+- **Co-located:** set `ingest.enabled` on the read release. One set of pods serves both
+  paths.
+- **Separate (recommended when the ingest listener is widely reachable):** install a
+  second release of the chart with `ingest.enabled: true`, `ingest.only: true` and its
+  own `nameOverride`, and leave ingest disabled on the read release. An ingest-only
+  release has no read routes, read listeners, label store or read RBAC, so the pods
+  writers can reach hold no read access.
+
+```yaml
+# values for the ingest-only release
+nameOverride: lgtm-lbac-write
+ingest:
+  enabled: true
+  only: true
+  metrics: { url: http://otel-gateway-receiver.observability.svc:4320 }
+  logs:    { url: http://otel-gateway-receiver.observability.svc:4320 }
+  writers: { otlp-writer-app-a: app-a }
+  serverSecretName: lgtm-lbac-write-tls
+  serverCertificate:
+    enabled: true
+    dnsNames: ["otlp.example.com"]
+    issuerRef: { name: example-issuer }
+  loadBalancer:
+    enabled: true            # a LoadBalancer exposing only the ingest port
+auth:
+  jwksCertUrl: https://login.example.com/keys
+  claims: { groups: groups }
+  issuer: https://login.example.com/
+  audiences: ["api://lgtm"]
+```
+
+**Clients.** Any OTLP/HTTP exporter that can send a bearer token works: OTel SDKs,
+collectors (`bearertokenauth` / `oauth2client`), Alloy (`otelcol.auth.oauth2`). Tokens
+expire, so use a mechanism that refreshes them. For example, Claude Code / the Claude
+Agent SDK:
+
+```bash
+export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export OTEL_METRICS_EXPORTER=otlp OTEL_LOGS_EXPORTER=otlp
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+export OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=https://otlp.example.com/v1/metrics
+export OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=https://otlp.example.com/v1/logs
+# Prometheus-style backends store cumulative series; delta metrics may be dropped
+export OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative
+# plus "otelHeadersHelper" in settings.json printing {"Authorization": "Bearer <token>"}
+```
+
+Metrics on the metrics port:
+- `lgtm_lbac_proxy_ingest_requests_total{writer,signal,code,edge}`
+- `lgtm_lbac_proxy_ingest_request_bytes_total{writer,signal,edge}`
+- `lgtm_lbac_proxy_ingest_rejected_total{signal,reason,edge}`, where reason is one of
+  `unauthenticated`, `no_role`, `ambiguous_role`, `too_large`, `upstream_error`
+
+**Edges (optional).** When the gateway is published through more than one path (for
+example on an internal load balancer and through a CDN or tunnel), `edges` says which
+path each push took. A push carrying an edge's marker header is labelled with that
+edge's name in the metrics above, refusals included. Anything else is `direct`. With
+`edge_header` set, the upstream also receives the edge name, overwritten like the writer
+header:
+
+```yaml
+ingest:
+  edges:
+    - name: cloudflare
+      header: Cf-Ray                      # added by Cloudflare to every forwarded request
+      client_ip_header: Cf-Connecting-Ip  # optional; logged with the push at debug level
+  edge_header: X-Ingest-Edge              # optional; unset = not forwarded
+```
+
+```promql
+sum by (writer, edge) (rate(lgtm_lbac_proxy_ingest_requests_total[5m]))
+```
+
+A direct client could send the marker header itself, so the edge is for observing
+traffic, not for access decisions.
+
+The listener's HTTP metrics carry the `ingest_` prefix.
+
+### Static keys (optional)
+
+Some callers cannot obtain an expiring token:
+- SaaS exporters that only take fixed headers
+- a Grafana data source behind publicly shared dashboards, whose queries run with no
+  signed-in user
+- scripts on hosts without an identity-provider client
+
+For these, both paths accept optional **static keys**. They are off unless configured,
+and JWTs keep working alongside them.
+
+| | Read path: `auth.static_keys` | Write path: `ingest.static_keys` |
+|---|---|---|
+| Maps | SHA-256 of the key → **identity** | SHA-256 of the key → **writer id** |
+| Scope | That identity's `labels.yaml` entry, enforced like any user | Pushes as that writer only |
+| Limits | No groups, so never admin; a `#cluster-wide` entry is refused | Cannot read |
+
+The maps are separate: a write key never reads and a read key never writes.
+
+```yaml
+auth:
+  static_keys:
+    "<sha256-hex>": public-viewer      # a labels.yaml entry named public-viewer scopes it
+ingest:
+  static_keys:
+    "<sha256-hex>": app-b
+```
+
+Generate a key, and configure **only its hash**:
+
+```bash
+KEY=$(openssl rand -base64 32)            # give the key to the client
+printf %s "$KEY" | sha256sum              # put this hex in the config
+```
+
+The hash is 64 lowercase hex characters. A raw key pasted in by mistake fails
+validation and is never logged in full. Several hashes may map to the same identity or
+writer, so a key can be rotated with no downtime:
+1. Add the new key's hash.
+2. Move the client to the new key.
+3. Remove the old hash.
+
+Static keys never expire on their own: keep each one narrowly scoped and rotate it.
+
+**Grafana publicly shared dashboards.** Their queries run without a viewer's token, so a
+data source that forwards the user's OAuth identity cannot serve them.
+- Give them their own data sources that send a static read key, scoped to the data you
+  intend to share. Panels on shared dashboards cannot use template variables.
+- Grafana can read the key from an environment variable populated from a Kubernetes
+  Secret:
+
+```yaml
+# Grafana data source provisioning
+- name: Metrics (public)
+  type: prometheus
+  url: http://lgtm-lbac-proxy.example.svc:8080
+  jsonData:
+    httpHeaderName1: Authorization
+  secureJsonData:
+    httpHeaderValue1: "Bearer $__env{LBAC_PUBLIC_READ_KEY}"
+```
+
+Grafana OSS has no per-data-source permissions, so every Grafana user can also query
+these data sources. Grant the identity only what everyone may see.
 
 ---
 
@@ -177,15 +522,17 @@ graph TD
 ### Binary
 
 ```bash
-# Download latest release
-wget https://github.com/binhnguyenduc/lgtm-lbac-proxy/releases/latest/download/lgtm-lbac-proxy
-
-# Make executable
-chmod +x lgtm-lbac-proxy
+# Build and install the latest alpha (Go 1.26+)
+go install github.com/at-blacknight-projects/lgtm-lbac-proxy@alpha
 
 # Run with config
-./lgtm-lbac-proxy
+lgtm-lbac-proxy
 ```
+
+Don't use `@latest` for now. It resolves to `v0.1.0`, which still declares the old
+`github.com/binhnguyenduc/lgtm-lbac-proxy` module path, so `go install` refuses it. That changes
+once `main` makes a release under this module path. Binaries built with `go install` report
+version `dev`; the release images carry the real version.
 
 ### Docker
 
@@ -194,20 +541,32 @@ docker run -d \
   -p 8080:8080 \
   -p 8081:8081 \
   -v $(pwd)/configs:/etc/config/config:ro \
-  ghcr.io/binhnguyenduc/lgtm-lbac-proxy:latest
+  ghcr.io/at-blacknight-projects/lgtm-lbac-proxy:<version>
 ```
+
+Use a version from the [package's tags](https://github.com/at-blacknight-projects/lgtm-lbac-proxy/pkgs/container/lgtm-lbac-proxy), e.g. `0.2.0-alpha.13`.
 
 ### Kubernetes (Helm)
 
 ```bash
-# Install from local chart
+# Install from the chart repository (pre-releases need --devel or an explicit --version)
+helm repo add lgtm-lbac https://at-blacknight-projects.github.io/helm-charts/
+helm install lgtm-lbac-proxy lgtm-lbac/lgtm-lbac-proxy --devel \
+  --namespace observability \
+  --create-namespace \
+  --set auth.jwksCertUrl=https://your-oauth.com/certs \
+  --set thanos.url=https://thanos-query:9091 \
+  --set loki.url=https://loki-query:3100 \
+  --set tempo.url=https://tempo-query:3200
+
+# Or install from a local checkout
 helm install lgtm-lbac-proxy ./helm/lgtm-lbac-proxy \
   --namespace observability \
   --create-namespace \
-  --set proxy.web.jwksCertUrl=https://your-oauth.com/certs \
-  --set proxy.thanos.url=https://thanos-query:9091 \
-  --set proxy.loki.url=https://loki-query:3100 \
-  --set proxy.tempo.url=https://tempo-query:3200
+  --set auth.jwksCertUrl=https://your-oauth.com/certs \
+  --set thanos.url=https://thanos-query:9091 \
+  --set loki.url=https://loki-query:3100 \
+  --set tempo.url=https://tempo-query:3200
 
 # Create labels ConfigMap
 kubectl create configmap lgtm-lbac-proxy-labels \
@@ -523,14 +882,11 @@ user@example.com:
 A migration tool is provided to automatically convert simple format to extended format:
 
 ```bash
-# Download the migration tool
-wget https://github.com/binhnguyenduc/lgtm-lbac-proxy/releases/latest/download/migrate-labels
-
-# Make it executable
-chmod +x migrate-labels
+# Build and install the migration tool (Go 1.26+)
+go install github.com/at-blacknight-projects/lgtm-lbac-proxy/cmd/migrate-labels@alpha
 
 # Convert your labels file
-./migrate-labels -input labels.yaml -output labels-extended.yaml -tenant-label namespace
+migrate-labels -input labels.yaml -output labels-extended.yaml -tenant-label namespace
 
 # Verify the output
 cat labels-extended.yaml
@@ -696,13 +1052,13 @@ The project includes a production-ready Helm chart for Kubernetes deployment.
 helm install lgtm-lbac-proxy ./helm/lgtm-lbac-proxy \
   --namespace observability \
   --create-namespace \
-  --set proxy.auth.jwksCertUrl=https://oauth.example.com/certs \
-  --set proxy.auth.claims.username=preferred_username \
-  --set proxy.auth.claims.email=email \
-  --set proxy.auth.claims.groups=groups \
-  --set proxy.thanos.url=https://thanos-querier.monitoring.svc:9091 \
-  --set proxy.loki.url=https://loki-query-frontend.logging.svc:3100 \
-  --set proxy.tempo.url=https://tempo-query-frontend.tracing.svc:3200
+  --set auth.jwksCertUrl=https://oauth.example.com/certs \
+  --set auth.claims.username=preferred_username \
+  --set auth.claims.email=email \
+  --set auth.claims.groups=groups \
+  --set thanos.url=https://thanos-querier.monitoring.svc:9091 \
+  --set loki.url=https://loki-query-frontend.logging.svc:3100 \
+  --set tempo.url=https://tempo-query-frontend.tracing.svc:3200
 
 # Create labels ConfigMap with extended format
 cat <<EOF | kubectl apply -f -
@@ -883,7 +1239,7 @@ All requests must include valid JWT token in Authorization header.
 
 ```bash
 # Clone repository
-git clone https://github.com/binhnguyenduc/lgtm-lbac-proxy.git
+git clone https://github.com/at-blacknight-projects/lgtm-lbac-proxy.git
 cd lgtm-lbac-proxy
 
 # Build binary
@@ -907,8 +1263,12 @@ If you're migrating from the original multena-proxy, see [MIGRATION.md](MIGRATIO
 ### Naming Changes
 
 - **Binary name**: `multena-proxy` → `lgtm-lbac-proxy`
-- **Docker image**: `ghcr.io/gepaplexx/multena-proxy` → `ghcr.io/binhnguyenduc/lgtm-lbac-proxy`
-- **Helm chart**: `gp-multena` → `lgtm-lbac-proxy`
+- **Docker image**: `ghcr.io/gepaplexx/multena-proxy` → `ghcr.io/binhnguyenduc/lgtm-lbac-proxy` → `ghcr.io/at-blacknight-projects/lgtm-lbac-proxy`
+- **Helm chart**: `gp-multena` → `lgtm-lbac-proxy`, now from `https://at-blacknight-projects.github.io/helm-charts/`
+- **Go module**: `github.com/binhnguyenduc/lgtm-lbac-proxy` → `github.com/at-blacknight-projects/lgtm-lbac-proxy`. Update import paths if you build against the packages.
+
+Coming from binhnguyenduc/lgtm-lbac-proxy rather than multena-proxy, only the image, chart
+repository and module path change. Configuration and label formats are the same.
 
 ### Breaking Changes Since Fork
 
@@ -952,9 +1312,10 @@ If you're migrating from the original multena-proxy, see [MIGRATION.md](MIGRATIO
 Contributions are welcome! This is an independent project focused on LGTM stack support.
 
 1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
+2. Create a feature branch from `alpha`
+3. Make your changes, using [conventional commits](https://www.conventionalcommits.org/)
+   (they decide the next version)
+4. Submit a pull request into `alpha`, with a conventional-commit title
 
 ---
 
@@ -967,12 +1328,11 @@ This project is licensed under the GNU Affero General Public License v3.0 - see 
 ## Acknowledgments
 
 - **Original Project**: [multena-proxy](https://github.com/gepaplexx/multena-proxy) by Gepardec
+- **Parent fork**: [binhnguyenduc/lgtm-lbac-proxy](https://github.com/binhnguyenduc/lgtm-lbac-proxy), which extended it to the full LGTM stack
 - **Contributors**: Thank you to everyone who has contributed to making LGTM stack observability more secure
 
 ---
 
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/binhnguyenduc/lgtm-lbac-proxy/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/binhnguyenduc/lgtm-lbac-proxy/discussions)
-- **Documentation**: [GitHub Wiki](https://github.com/binhnguyenduc/lgtm-lbac-proxy/wiki)
+- **Issues**: [GitHub Issues](https://github.com/at-blacknight-projects/lgtm-lbac-proxy/issues)

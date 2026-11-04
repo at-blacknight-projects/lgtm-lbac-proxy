@@ -13,6 +13,20 @@ const (
 	OperatorRegexNoMatch = "!~"  // Negative regex match
 )
 
+// multiValueOperator returns the operator to use when a rule's values are joined into
+// one alternation: = and != become their regex forms, and the regex operators are
+// returned unchanged. The PromQL, LogQL and TraceQL enforcers and ruleToMatcher all
+// build multi-value matchers this way.
+func multiValueOperator(operator string) string {
+	switch operator {
+	case OperatorEquals:
+		return OperatorRegexMatch
+	case OperatorNotEquals:
+		return OperatorRegexNoMatch
+	}
+	return operator
+}
+
 // Logic constants for combining multiple rules
 const (
 	LogicAND = "AND" // All rules must match (default)

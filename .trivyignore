@@ -5,21 +5,31 @@
 # This is documented configuration, not sensitive data
 AVD-KSV-0109
 
-# --- CVEs in transitive deps whose vulnerable code we don't import/run, and which
-# --- cannot be cleanly bumped. We use ONLY parser/library packages:
-#   prometheus/prometheus -> model/labels, promql/parser (enforcer_promql.go, enforcer_logql.go, util.go)
-#   grafana/tempo         -> pkg/traceql                  (enforcer_traceql.go)
-# The flagged CVEs are in the prometheus server/API and tempo server/storage paths,
-# which are not imported or executed here. Bumping is also infeasible:
-#  - grafana/tempo is a v1-path module (no /v2), so Go can't accept the v2.10.3 fix as a
-#    version (it's a v1.x.x pseudo-version held by a replace directive).
-#  - prometheus is replace-pinned to v0.304.2 and coupled to tempo (both replaces added in
-#    the same commit); bumping it forces a graph re-resolve that fails on tempo's transitive
-#    test dep (otel-collector-contrib -> collector/pdata missing package), breaking the test
-#    build. Verified locally 2026-06-17.
-# Reassess if we import server/storage packages, or if grafana/tempo moves to a /v2 path.
-# Tracked in #6 — untangle the prometheus/tempo replace pins to remove these suppressions.
+# KSV-01010: False positive - the flagged keys are not secrets. auth.claims.username and
+# auth.claims.email are JWT claim *names* (e.g. "preferred_username"), and the "key" fields
+# are file paths to mTLS keys mounted from a Secret, never the key material itself.
+KSV-01010
+
+# KSV-0125: Which registries are trusted is the deployer's policy, not the chart's. The
+# default image is this project's own GHCR image, and image.repository is configurable;
+# enforce registry allow-lists with an admission policy in the cluster.
+KSV-0125
+
+# GO-2026-5932: golang.org/x/crypto/openpgp is deprecated/unmaintained. Nothing here
+# imports it (go list -deps has no openpgp package), so it is not in the binary; Trivy
+# flags it only because x/crypto is in the module graph. The only "fix" is an untagged
+# x/crypto pseudo-version; drop this when a tagged x/crypto release carries it.
+GO-2026-5932
+
+# --- grafana/tempo: whole-module advisories with no reachable fix (#6).
+# We import only github.com/grafana/tempo/pkg/traceql (the TraceQL parser, in
+# enforcer_traceql.go). Both CVEs are in Tempo's server components, which are neither
+# imported nor run here. Their only fixes are Tempo v2.x releases, and Tempo is a
+# v1-path Go module (no /v2), so no fixed version exists as a Go module version; the Go
+# vulnerability database notes it could not map these versions and flags the whole
+# module. The prometheus/prometheus CVEs that used to be listed here are fixed:
+# the replace pin was removed and prometheus is now v0.312.0.
+# Reassess if we import Tempo server/storage packages, or if grafana/tempo moves to a
+# /v2 module path.
 CVE-2026-21728
 CVE-2026-28377
-CVE-2026-42151
-CVE-2026-42154

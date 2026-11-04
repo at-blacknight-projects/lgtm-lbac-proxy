@@ -7,24 +7,34 @@ metadata:
     {{- include "lgtm-lbac-proxy.labels" . | nindent 4 }}
 spec:
   ports:
+    {{- if not (include "lgtm-lbac-proxy.ingestOnly" .) }}
     - port: {{ .Values.service.webPort }}
       targetPort: http
       protocol: TCP
       name: {{ include "lgtm-lbac-proxy.name" . }}
+    {{- end }}
     - port: {{ .Values.service.metricsPort }}
       targetPort: metrics
       protocol: TCP
       name: {{ include "lgtm-lbac-proxy.name" . }}-metrics
+    {{- if not (include "lgtm-lbac-proxy.ingestOnly" .) }}
     {{- with .Values.auth }}{{- with .clientCert }}{{- if and .enabled (eq (.source | default "mtls") "mtls") .mtlsPort }}
     - port: {{ .mtlsPort }}
       targetPort: mtls
       protocol: TCP
       name: {{ include "lgtm-lbac-proxy.name" $ }}-mtls
     {{- end }}{{- end }}{{- end }}
+    {{- end }}
+    {{- if .Values.ingest.enabled }}
+    - port: {{ .Values.ingest.port }}
+      targetPort: ingest
+      protocol: TCP
+      name: {{ include "lgtm-lbac-proxy.name" . }}-ingest
+    {{- end }}
   selector:
     {{- include "lgtm-lbac-proxy.selectorLabels" . | nindent 4 }}
   type: {{ .Values.service.type | default "ClusterIP" }}
-{{- with .Values.auth }}{{- with .clientCert }}{{- if and .enabled (eq (.source | default "mtls") "mtls") .mtlsPort $.Values.service.mtlsLoadBalancer.enabled }}
+{{- with .Values.auth }}{{- with .clientCert }}{{- if and .enabled (eq (.source | default "mtls") "mtls") .mtlsPort $.Values.service.mtlsLoadBalancer.enabled (not (include "lgtm-lbac-proxy.ingestOnly" $)) }}
 ---
 # Dedicated LoadBalancer exposing ONLY the mTLS port; reuses the chart's pod selector
 # and the mtls targetPort, so the plain HTTP and metrics ports stay internal.
@@ -52,3 +62,34 @@ spec:
       protocol: TCP
       name: mtls
 {{- end }}{{- end }}{{- end }}
+{{- if and .Values.ingest.enabled .Values.ingest.loadBalancer.enabled }}
+---
+# Dedicated LoadBalancer exposing ONLY the ingest port; reuses the chart's pod selector
+# and the ingest targetPort, so the read, mTLS and metrics ports stay off it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "lgtm-lbac-proxy.name" . }}-ingest
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lgtm-lbac-proxy.labels" . | nindent 4 }}
+  {{- with .Values.ingest.loadBalancer.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: LoadBalancer
+  {{- with .Values.ingest.loadBalancer.loadBalancerIP }}
+  loadBalancerIP: {{ . }}
+  {{- end }}
+  {{- with .Values.ingest.loadBalancer.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ . }}
+  {{- end }}
+  selector:
+    {{- include "lgtm-lbac-proxy.selectorLabels" . | nindent 4 }}
+  ports:
+    - port: {{ .Values.ingest.loadBalancer.port | default 443 }}
+      targetPort: ingest
+      protocol: TCP
+      name: ingest
+{{- end }}

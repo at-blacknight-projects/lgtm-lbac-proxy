@@ -53,6 +53,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
+"true" when this release runs as a write gateway alone (ingest.enabled and ingest.only),
+otherwise empty, so it can be used directly in an if.
+*/}}
+{{- define "lgtm-lbac-proxy.ingestOnly" -}}
+{{- if and .Values.ingest .Values.ingest.enabled .Values.ingest.only }}true{{- end }}
+{{- end }}
+
+{{/*
 Create the name of the service account to use
 */}}
 {{- define "lgtm-lbac-proxy.serviceAccountName" -}}

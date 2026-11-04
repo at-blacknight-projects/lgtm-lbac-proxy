@@ -34,11 +34,11 @@ Before upgrading to v0.12.0:
 
 ### Migration Steps
 
-#### Step 1: Download Migration Tool
+#### Step 1: Install Migration Tool
 
 ```bash
-wget https://github.com/binhnguyenduc/lgtm-lbac-proxy/releases/latest/download/migrate-labels
-chmod +x migrate-labels
+# Go 1.26+
+go install github.com/at-blacknight-projects/lgtm-lbac-proxy/cmd/migrate-labels@latest
 ```
 
 #### Step 2: Export Current Labels
@@ -53,10 +53,10 @@ kubectl get configmap lgtm-lbac-proxy-labels -n monitoring \
 
 ```bash
 # Preview conversion (dry-run)
-./migrate-labels -input labels-current.yaml -dry-run -tenant-label namespace
+migrate-labels -input labels-current.yaml -dry-run -tenant-label namespace
 
 # Convert to extended format
-./migrate-labels -input labels-current.yaml \
+migrate-labels -input labels-current.yaml \
   -output labels-extended.yaml \
   -tenant-label namespace
 
@@ -121,7 +121,7 @@ kubectl rollout restart deployment/lgtm-lbac-proxy -n monitoring
 
 **Error: "invalid label format" or "missing _rules key"**
 - Check that all users have `_rules` and `_logic` keys
-- Validate YAML syntax with: `./migrate-labels -input labels.yaml -validate`
+- Validate YAML syntax with: `migrate-labels -input labels.yaml -validate`
 
 **Error: Queries return 403 after upgrade**
 - Verify label names are correct (case-sensitive)
@@ -130,7 +130,7 @@ kubectl rollout restart deployment/lgtm-lbac-proxy -n monitoring
 
 **Need help?**
 - See [Migration Guide](../../README.md#migration-from-simple-format-v011-and-earlier)
-- Open issue: https://github.com/binhnguyenduc/lgtm-lbac-proxy/issues
+- Open issue: https://github.com/at-blacknight-projects/lgtm-lbac-proxy/issues
 
 ---
 
@@ -251,13 +251,13 @@ For local or manual migrations, use the standalone CLI tool:
 go build -o migrate-labels ./cmd/migrate-labels
 
 # Validate current labels
-./migrate-labels -input labels.yaml -validate
+migrate-labels -input labels.yaml -validate
 
 # Preview conversion
-./migrate-labels -input labels.yaml -dry-run
+migrate-labels -input labels.yaml -dry-run
 
 # Convert to extended format
-./migrate-labels -input labels.yaml -output labels-extended.yaml
+migrate-labels -input labels.yaml -output labels-extended.yaml
 ```
 
 See [cmd/migrate-labels/README.md](../../cmd/migrate-labels/README.md) for full documentation.
@@ -362,5 +362,5 @@ The proxy supports mixed formats. You can migrate users incrementally:
 ### Support
 
 For issues or questions:
-- GitHub Issues: https://github.com/binhnguyenduc/lgtm-lbac-proxy/issues
+- GitHub Issues: https://github.com/at-blacknight-projects/lgtm-lbac-proxy/issues
 - Documentation: See [README.md](../../README.md)

@@ -9,10 +9,11 @@ import (
 	"net/url"
 	"os"
 	"runtime"
-	"strings"
+	"sync/atomic"
 
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/gorilla/mux"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/rs/zerolog/pkgerrors"
@@ -24,7 +25,6 @@ import (
 
 type App struct {
 	Jwks                keyfunc.Keyfunc
-	Cfg                 *Config
 	TlS                 *tls.Config
 	ServiceAccountToken string
 	LabelStore          Labelstore
@@ -32,18 +32,30 @@ type App struct {
 	thanosProxy         *httputil.ReverseProxy
 	tempoProxy          *httputil.ReverseProxy
 	alertmanagerProxy   *httputil.ReverseProxy
+	ingestProxies       map[string]*httputil.ReverseProxy // by OTLP signal
+	rootCAs             *x509.CertPool                    // trust pool built by WithTLSConfig
 	i                   *mux.Router
 	e                   *mux.Router
+	w                   *mux.Router // write (ingest) router, served only on the ingest listener
 	healthy             bool
+
+	// cfg is the live configuration; read it with Cfg(). A reload publishes a new,
+	// validated Config instead of changing the one requests are reading. It is a
+	// pointer so App stays copyable (tests return it by value).
+	cfg *atomic.Pointer[Config]
 }
 
-var Commit string
+// Version and Commit are stamped at build time with -ldflags "-X main.Version=… -X main.Commit=…".
+var (
+	Version = "dev"
+	Commit  string
+)
 
 func main() {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 	zerolog.ErrorStackMarshaler = pkgerrors.MarshalStack
 	log.Info().Msg("-------Init Proxy-------")
-	log.Info().Msgf("Commit: %s", Commit)
+	log.Info().Str("version", Version).Str("commit", Commit).Msg("Build")
 	log.Debug().Str("go_version", runtime.Version()).Msg("")
 	log.Debug().Str("go_os", runtime.GOOS).Str("go_arch", runtime.GOARCH).Msg("")
 	log.Debug().Str("go_compiler", runtime.Compiler).Msg("")
@@ -57,9 +69,10 @@ func main() {
 		WithProxies().
 		WithHealthz().
 		WithRoutes().
+		WithIngest().
 		StartServer()
 
-	log.Info().Any("config", app.Cfg)
+	log.Info().Any("config", app.Cfg())
 	log.Info().Msg("------Init Complete------")
 	select {}
 }
@@ -73,12 +86,25 @@ func main() {
 //     clients keep working) AND an additive mTLS listener on mtls_port (expose this one).
 //   - Source "mtls" with mtls_port unset: the mTLS listener replaces the plain one on
 //     web.proxy_port.
+//
+// Independently of the above, ingest.enabled adds a TLS listener on ingest.port that
+// serves only the write router; with ingest.only, that and the metrics listener are the
+// only ones started.
 func (a *App) StartServer() {
 	go func() {
-		if err := http.ListenAndServe(fmt.Sprintf("%s:%d", a.Cfg.Web.Host, a.Cfg.Web.MetricsPort), a.i); err != nil {
+		if err := http.ListenAndServe(fmt.Sprintf("%s:%d", a.Cfg().Web.Host, a.Cfg().Web.MetricsPort), a.i); err != nil {
 			log.Fatal().Err(err).Msg("Error while serving metrics")
 		}
 	}()
+
+	if a.Cfg().Ingest.Enabled && a.w != nil {
+		ingestMdlw := ingestHTTPMetrics(prometheus.DefaultRegisterer)
+		go a.serveIngest(fmt.Sprintf("%s:%d", a.Cfg().Web.Host, a.Cfg().Ingest.Port), std.Handler("/", ingestMdlw, a.w))
+	}
+	if a.ingestOnly() {
+		log.Info().Msg("Ingest-only: read listeners not started")
+		return
+	}
 
 	mdlw := middleware.New(middleware.Config{
 		Recorder: metrics.NewRecorder(metrics.Config{}),
@@ -86,14 +112,14 @@ func (a *App) StartServer() {
 	})
 	handler := std.Handler("/", mdlw, a.e)
 
-	cc := a.Cfg.Auth.ClientCert
-	proxyAddr := fmt.Sprintf("%s:%d", a.Cfg.Web.Host, a.Cfg.Web.ProxyPort)
+	cc := a.Cfg().Auth.ClientCert
+	proxyAddr := fmt.Sprintf("%s:%d", a.Cfg().Web.Host, a.Cfg().Web.ProxyPort)
 	mtls := cc.Enabled && cc.Source == "mtls"
 
 	// mTLS on a dedicated port, plain HTTP stays on the proxy port (additive).
-	if mtls && cc.MTLSPort != 0 && cc.MTLSPort != a.Cfg.Web.ProxyPort {
+	if mtls && cc.MTLSPort != 0 && cc.MTLSPort != a.Cfg().Web.ProxyPort {
 		go a.servePlain(proxyAddr, handler)
-		go a.serveMTLS(fmt.Sprintf("%s:%d", a.Cfg.Web.Host, cc.MTLSPort), handler)
+		go a.serveMTLS(fmt.Sprintf("%s:%d", a.Cfg().Web.Host, cc.MTLSPort), handler)
 		return
 	}
 
@@ -121,7 +147,7 @@ func (a *App) serveMTLS(addr string, handler http.Handler) {
 	if err != nil {
 		log.Fatal().Err(err).Msg("Error while building mTLS proxy server")
 	}
-	log.Info().Str("addr", addr).Str("client_auth", a.Cfg.Auth.ClientCert.ClientAuth).Msg("Serving proxy with mTLS client authentication")
+	log.Info().Str("addr", addr).Str("client_auth", a.Cfg().Auth.ClientCert.ClientAuth).Msg("Serving proxy with mTLS client authentication")
 	if err := srv.ListenAndServeTLS("", ""); err != nil {
 		log.Fatal().Err(err).Msg("Error while serving proxy")
 	}
@@ -132,7 +158,7 @@ func (a *App) serveMTLS(addr string, handler http.Handler) {
 // available to getIdentity for admission. ClientAuth "require" rejects clients without a
 // valid cert at handshake; "request" verifies a cert if given, allowing mixed JWT+mTLS.
 func (a *App) buildMTLSServer(addr string, handler http.Handler) (*http.Server, error) {
-	cc := a.Cfg.Auth.ClientCert
+	cc := a.Cfg().Auth.ClientCert
 
 	serverCert, err := tls.LoadX509KeyPair(cc.ServerCert, cc.ServerKey)
 	if err != nil {
@@ -176,74 +202,76 @@ func clientAuthType(s string) tls.ClientAuthType {
 func (a *App) WithProxies() *App {
 	log.Info().Msg("Initializing reverse proxies")
 
+	if a.ingestOnly() {
+		a.withIngestProxies()
+		return a
+	}
+
 	// Initialize Loki proxy if URL is configured
-	if a.Cfg.Loki.URL != "" {
-		proxyCfg := a.Cfg.GetProxyConfig(a.Cfg.Loki.Proxy)
+	if a.Cfg().Loki.URL != "" {
+		proxyCfg := a.Cfg().GetProxyConfig(a.Cfg().Loki.Proxy)
 		transport := a.createTransport(proxyCfg, a.TlS)
-		a.lokiProxy = a.createProxy(a.Cfg.Loki.URL, a.Cfg.Loki.ActorHeader, transport, "loki")
+		a.lokiProxy = a.createProxy(a.Cfg().Loki.URL, a.Cfg().Loki.ActorHeader, transport, "loki")
 		log.Info().
-			Str("url", a.Cfg.Loki.URL).
+			Str("url", a.Cfg().Loki.URL).
 			Dur("request_timeout", proxyCfg.RequestTimeout).
 			Int("max_idle_conns_per_host", proxyCfg.MaxIdleConnsPerHost).
 			Msg("Loki proxy initialized")
 	}
 
 	// Initialize Thanos proxy if URL is configured
-	if a.Cfg.Thanos.URL != "" {
-		proxyCfg := a.Cfg.GetProxyConfig(a.Cfg.Thanos.Proxy)
+	if a.Cfg().Thanos.URL != "" {
+		proxyCfg := a.Cfg().GetProxyConfig(a.Cfg().Thanos.Proxy)
 		transport := a.createTransport(proxyCfg, a.TlS)
-		a.thanosProxy = a.createProxy(a.Cfg.Thanos.URL, a.Cfg.Thanos.ActorHeader, transport, "thanos")
+		a.thanosProxy = a.createProxy(a.Cfg().Thanos.URL, a.Cfg().Thanos.ActorHeader, transport, "thanos")
 		log.Info().
-			Str("url", a.Cfg.Thanos.URL).
+			Str("url", a.Cfg().Thanos.URL).
 			Dur("request_timeout", proxyCfg.RequestTimeout).
 			Int("max_idle_conns_per_host", proxyCfg.MaxIdleConnsPerHost).
 			Msg("Thanos proxy initialized")
 	}
 
 	// Initialize Tempo proxy if URL is configured
-	if a.Cfg.Tempo.URL != "" {
-		proxyCfg := a.Cfg.GetProxyConfig(a.Cfg.Tempo.Proxy)
+	if a.Cfg().Tempo.URL != "" {
+		proxyCfg := a.Cfg().GetProxyConfig(a.Cfg().Tempo.Proxy)
 		transport := a.createTransport(proxyCfg, a.TlS)
-		a.tempoProxy = a.createProxy(a.Cfg.Tempo.URL, a.Cfg.Tempo.ActorHeader, transport, "tempo")
+		a.tempoProxy = a.createProxy(a.Cfg().Tempo.URL, a.Cfg().Tempo.ActorHeader, transport, "tempo")
 		log.Info().
-			Str("url", a.Cfg.Tempo.URL).
+			Str("url", a.Cfg().Tempo.URL).
 			Dur("request_timeout", proxyCfg.RequestTimeout).
 			Int("max_idle_conns_per_host", proxyCfg.MaxIdleConnsPerHost).
 			Msg("Tempo proxy initialized")
 	}
 
 	// Initialize Alertmanager proxy if URL is configured
-	if a.Cfg.Alertmanager.URL != "" {
-		proxyCfg := a.Cfg.GetProxyConfig(a.Cfg.Alertmanager.Proxy)
+	if a.Cfg().Alertmanager.URL != "" {
+		proxyCfg := a.Cfg().GetProxyConfig(a.Cfg().Alertmanager.Proxy)
 		transport := a.createTransport(proxyCfg, a.TlS)
-		a.alertmanagerProxy = a.createProxy(a.Cfg.Alertmanager.URL, a.Cfg.Alertmanager.ActorHeader, transport, "alertmanager")
+		a.alertmanagerProxy = a.createProxy(a.Cfg().Alertmanager.URL, a.Cfg().Alertmanager.ActorHeader, transport, "alertmanager")
 		log.Info().
-			Str("url", a.Cfg.Alertmanager.URL).
+			Str("url", a.Cfg().Alertmanager.URL).
 			Dur("request_timeout", proxyCfg.RequestTimeout).
 			Int("max_idle_conns_per_host", proxyCfg.MaxIdleConnsPerHost).
 			Msg("Alertmanager proxy initialized")
 	}
 
+	a.withIngestProxies()
+
 	return a
 }
 
-// singleJoiningSlash joins two URL path segments with exactly one separating slash.
-// Copied from the standard library's net/http/httputil (where it is unexported), so the
-// custom Director can prepend a configured upstream base path the same way
-// NewSingleHostReverseProxy does.
-func singleJoiningSlash(a, b string) string {
-	aslash := strings.HasSuffix(a, "/")
-	bslash := strings.HasPrefix(b, "/")
-	switch {
-	case aslash && bslash:
-		return a + b[1:]
-	case !aslash && !bslash:
-		return a + "/" + b
-	}
-	return a + b
-}
+// ctxKey is the type of the request-context keys this package sets. A private type keeps
+// them from colliding with keys set by other packages.
+type ctxKey int
 
-// createProxy creates a reverse proxy with custom Director, ErrorHandler, and ModifyResponse.
+const (
+	// ctxKeyUsername and ctxKeyEmail carry the caller's identity from the route handlers
+	// to the proxy's Rewrite, which uses them for the actor header.
+	ctxKeyUsername ctxKey = iota
+	ctxKeyEmail
+)
+
+// createProxy creates a reverse proxy with custom Rewrite, ErrorHandler, and ModifyResponse.
 // Using direct ReverseProxy instantiation instead of NewSingleHostReverseProxy for better control.
 func (a *App) createProxy(targetURL string, actorHeader string, transport *http.Transport, upstream string) *httputil.ReverseProxy {
 	target, err := url.Parse(targetURL)
@@ -252,38 +280,35 @@ func (a *App) createProxy(targetURL string, actorHeader string, transport *http.
 	}
 
 	proxy := &httputil.ReverseProxy{
-		// Custom Director for URL rewriting and actor header injection
-		Director: func(req *http.Request) {
-			req.URL.Scheme = target.Scheme
-			req.URL.Host = target.Host
-			req.Host = target.Host
-
-			// Honor a base path on the configured upstream URL so it is prepended to the
-			// incoming request path. This is required for upstreams that mount the
-			// Prometheus-compatible API under a prefix — notably Mimir, which serves it
+		// Custom Rewrite for URL rewriting and actor header injection
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			// Route to the upstream. SetURL also prepends a base path on the configured
+			// upstream URL to the incoming path. This is required for upstreams that mount
+			// the Prometheus-compatible API under a prefix — notably Mimir, which serves it
 			// at /prometheus/api/v1/* (vs Thanos at /api/v1/*) — and also enables
-			// sub-path-mounted Loki/Tempo. Backwards-compatible: when the upstream URL has
-			// no base path ("" or "/"), the incoming path is forwarded unchanged.
-			if target.Path != "" && target.Path != "/" {
-				req.URL.Path = singleJoiningSlash(target.Path, req.URL.Path)
-				if req.URL.RawPath != "" {
-					req.URL.RawPath = singleJoiningSlash(target.Path, req.URL.RawPath)
-				}
-			}
+			// sub-path-mounted Loki/Tempo. With no base path ("" or "/") the incoming path
+			// is forwarded unchanged.
+			pr.SetURL(target)
+
+			// Keep the client's X-Forwarded-For chain and append this hop, as the Director
+			// did. X-Forwarded-Host and -Proto are now set from the request the proxy
+			// received, instead of passing through whatever the client sent.
+			pr.Out.Header["X-Forwarded-For"] = pr.In.Header["X-Forwarded-For"]
+			pr.SetXForwarded()
 
 			// Inject actor header if configured (base64 encoded username for fair usage tracking)
 			if actorHeader != "" {
-				if username, ok := req.Context().Value("username").(string); ok && username != "" {
-					req.Header.Set(actorHeader, username)
-				} else if email, ok := req.Context().Value("email").(string); ok && email != "" {
-					req.Header.Set(actorHeader, email)
+				if username, ok := pr.In.Context().Value(ctxKeyUsername).(string); ok && username != "" {
+					pr.Out.Header.Set(actorHeader, username)
+				} else if email, ok := pr.In.Context().Value(ctxKeyEmail).(string); ok && email != "" {
+					pr.Out.Header.Set(actorHeader, email)
 				}
 			}
 
 			log.Debug().
 				Str("upstream", upstream).
-				Str("method", req.Method).
-				Str("path", req.URL.Path).
+				Str("method", pr.Out.Method).
+				Str("path", pr.Out.URL.Path).
 				Msg("Proxying request")
 		},
 

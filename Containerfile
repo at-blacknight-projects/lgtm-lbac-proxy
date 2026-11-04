@@ -4,7 +4,7 @@
 # Build the binary first: CGO_ENABLED=0 go build -ldflags="-w -s" -trimpath -o lgtm-lbac-proxy .
 
 # Helper stage to create user and get certificates
-FROM alpine:latest AS prep
+FROM alpine:3.24.3 AS prep
 
 # Create nonroot user
 RUN addgroup -g 65532 -S nonroot && \
@@ -36,8 +36,8 @@ USER 65532:65532
 # Add metadata labels
 LABEL org.opencontainers.image.title="LGTM LBAC Proxy" \
       org.opencontainers.image.description="Label-Based Access Control proxy for LGTM stack (Loki, Grafana, Tempo, Mimir)" \
-      org.opencontainers.image.vendor="binhnguyenduc" \
-      org.opencontainers.image.source="https://github.com/binhnguyenduc/lgtm-lbac-proxy" \
+      org.opencontainers.image.vendor="at-blacknight-projects" \
+      org.opencontainers.image.source="https://github.com/at-blacknight-projects/lgtm-lbac-proxy" \
       org.opencontainers.image.licenses="AGPL-3.0"
 
 # Health check using the binary itself

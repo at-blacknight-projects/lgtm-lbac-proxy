@@ -13,6 +13,11 @@ import (
 // PromQLEnforcer is a struct with methods to enforce specific rules on Prometheus Query Language (PromQL) queries.
 type PromQLEnforcer struct{}
 
+// promqlParser parses enforced queries. Zero Options keep experimental functions and
+// duration expressions off, as the package-level parser.ParseExpr did. It holds no
+// per-parse state, so one instance serves concurrent requests.
+var promqlParser = parser.NewParser(parser.Options{})
+
 // Enforce enhances a given PromQL query with multi-label enforcement based on LabelPolicy.
 // It supports multiple label rules with different operators (=, !=, =~, !~) combined with AND logic.
 // Returns the enhanced query or an error if the query cannot be parsed or is not compliant.
@@ -31,7 +36,7 @@ func (PromQLEnforcer) Enforce(query string, policy LabelPolicy) (string, error) 
 	}
 
 	// Parse the query
-	expr, err := parser.ParseExpr(query)
+	expr, err := promqlParser.ParseExpr(query)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse query: %w", err)
 	}
@@ -77,11 +82,7 @@ func buildMatcherString(rule LabelRule) string {
 	// For multiple values, use regex operator and combine with |
 	if len(rule.Values) > 1 {
 		value = strings.Join(rule.Values, "|")
-		if operator == OperatorEquals {
-			operator = OperatorRegexMatch
-		} else if operator == OperatorNotEquals {
-			operator = OperatorRegexNoMatch
-		}
+		operator = multiValueOperator(operator)
 	}
 
 	return fmt.Sprintf("%s%s%q", rule.Name, operator, value)
@@ -164,17 +165,6 @@ func validateMatcherWithValues(matcher *labels.Matcher, allowedValues map[string
 	// (this is a complex semantic check that would require analyzing the full boolean logic)
 
 	return nil
-}
-
-// validateMatcher checks if a single matcher complies with the policy rule.
-// Deprecated: Use validateMatcherWithValues instead.
-func validateMatcher(matcher *labels.Matcher, rule *LabelRule) error {
-	// Create a map of allowed values
-	allowedValues := make(map[string]bool)
-	for _, v := range rule.Values {
-		allowedValues[v] = true
-	}
-	return validateMatcherWithValues(matcher, allowedValues)
 }
 
 // buildMatchersFromPolicy creates label matchers from policy rules.

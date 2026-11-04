@@ -5,6 +5,75 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0-alpha.13] - 2026-10-28
+
+### Security
+
+- **`github.com/klauspost/compress` 1.18.0 → 1.18.7** for CVE-2026-63209 (HIGH, denial
+  of service). The image scan failed on it for 0.2.0-alpha.12, so **no 0.2.0-alpha.12
+  image was published**. This release carries that release's changes; use it instead.
+
+## [0.2.0-alpha.12] - 2026-10-28
+
+### Added
+
+- **Prometheus health endpoints** on the proxy port, and on the mTLS port that serves
+  the same router: `GET`/`HEAD /-/healthy` and `/-/ready`. Clients that treat the proxy
+  as a Prometheus server probe them before querying and stop on anything but a 200;
+  the MinIO console's dashboard does so before every widget query.
+  - **Liveness only**, as in Prometheus: no credentials, no upstream call, no label
+    store lookup. They share `/healthz`'s state, so they return 500 once a
+    configuration reload has failed.
+  - Queries are authenticated and enforced exactly as before.
+  - Ingest-only mode serves no read routes, so none of these either.
+
+## [0.2.0-alpha.11] - 2026-10-15
+
+### Added
+
+- **Static keys**, optional and off by default, for callers that cannot obtain an
+  expiring token. JWTs keep working alongside them.
+  - **`auth.static_keys`** (read): SHA-256 of a key → an identity scoped by its
+    `labels.yaml` entry. It has no groups, so it is never admin, and a `#cluster-wide`
+    entry is refused.
+  - **`ingest.static_keys`** (write): SHA-256 of a key → a writer id. Read and write keys
+    are separate.
+  - **Validation:** only hashes are configured, as 64 lowercase hex characters. A raw key
+    fails validation and is not logged in full.
+  - **Rotation:** several hashes may share an identity or writer, so keys rotate with no
+    downtime.
+  - **Writers:** `ingest.writers` may now be empty when `ingest.static_keys` is set.
+
+## [0.2.0-alpha.10] - 2026-10-14
+
+### Added
+
+- **OTLP write gateway** (`ingest`, off by default). A separate TLS listener serving only
+  `POST /v1/{metrics,logs,traces}` (each when its upstream is set) and an
+  unauthenticated `GET /healthz`.
+  - **Identity:** JWT only. Client-certificate and trusted-header identity are not used.
+    `ingest.writers` maps a group to a writer id. Exactly one distinct id must match,
+    and the admin group is not a writer.
+  - **Forwarding:** the body is streamed to the upstream unchanged, with the writer id in
+    `ingest.writer_header` (default `X-Ingest-Writer`, e.g. `X-Scope-OrgID` for
+    multi-tenant backends), overwriting any client value. The caller's credentials are
+    removed, and the upstream's response is relayed.
+  - **Limits and errors:** `ingest.max_body_bytes` caps the body (413). An unreachable
+    upstream gives 502. Read, write and idle timeouts are bounded.
+  - **Metrics:** `lgtm_lbac_proxy_ingest_requests_total`,
+    `lgtm_lbac_proxy_ingest_request_bytes_total` and
+    `lgtm_lbac_proxy_ingest_rejected_total`. HTTP metrics use the `ingest_` prefix.
+  - **Trust:** the upstream must be reachable only through the gateway, since it trusts
+    the writer header.
+- **`ingest.only`:** run as a write gateway alone, with no label store, read upstreams,
+  read routes or read listeners.
+
+### Known Issues
+
+- Read upstream proxies are given `App.TlS`, which is never populated, so they use the
+  transport's default TLS settings rather than the configured CA pool and upstream
+  client certificates. Ingest upstreams use the root pool built by `WithTLSConfig`.
+
 ## [0.15.8] - 2025-11-04
 
 ### Fixed

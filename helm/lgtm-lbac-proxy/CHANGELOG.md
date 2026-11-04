@@ -5,6 +5,52 @@ All notable changes to the LGTM LBAC Proxy Helm chart will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0-alpha.13] - 2026-10-28
+
+### Changed
+
+- **appVersion 0.2.0-alpha.13**: dependency security fix (CVE-2026-63209). No template
+  or values changes.
+
+### Fixed
+
+- **0.2.0-alpha.12 has no image.** Its appVersion was never published (the image scan
+  failed), so that chart version cannot start. Use 0.2.0-alpha.13.
+
+## [0.2.0-alpha.12] - 2026-10-28
+
+### Changed
+
+- **appVersion 0.2.0-alpha.12**: the proxy answers Prometheus's `/-/healthy` and
+  `/-/ready`. No template or values changes, so the rendered output is unchanged apart
+  from the image tag.
+
+## [0.2.0-alpha.11] - 2026-10-15
+
+### Added
+
+- **`auth.staticKeys`** and **`ingest.staticKeys`** (read and write static keys; hashes
+  only), rendered only when set. Without them the rendered output is unchanged.
+
+## [0.2.0-alpha.10] - 2026-10-14
+
+### Added
+
+- **`ingest` values** for the OTLP write gateway, off by default:
+  - **Base:** `ingest.enabled` renders the ingest config, container and ClusterIP ports,
+    and mounts `ingest.serverSecretName` at `/etc/secrets/ingest/`.
+  - **`ingest.serverCertificate`** optionally creates a cert-manager Certificate for it.
+  - **`ingest.loadBalancer`** adds a LoadBalancer Service exposing only the ingest port,
+    with optional `loadBalancerIP`, `externalTrafficPolicy` and annotations.
+  - **`ingest.only`** makes the release a write gateway alone. It drops the `http` and
+    `mtls` ports, the labels ConfigMap and mount, the client-cert mounts and Certificate,
+    the mTLS LoadBalancer, and the `cluster-monitoring-view` binding. Install it as a
+    second release with its own `nameOverride`.
+
+### Changed
+
+- With `ingest` disabled, the rendered output is unchanged.
+
 ## [1.12.5] - 2025-11-04
 
 ### Changed

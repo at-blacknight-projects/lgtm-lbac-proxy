@@ -23,7 +23,7 @@ type requestData struct {
 func (a *App) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var bodyBytes []byte
-		isTraceLevel := a.Cfg.Log.Level == -1
+		isTraceLevel := a.Cfg().Log.Level == -1
 		if isTraceLevel {
 			bodyBytes = readBody(r)
 		} else {

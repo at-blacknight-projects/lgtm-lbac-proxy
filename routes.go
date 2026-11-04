@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/http/pprof"
-	"net/url"
 
 	"github.com/rs/zerolog/log"
 
@@ -20,33 +19,59 @@ type Route struct {
 	MatchWord string
 }
 
+// healthHandler reports the proxy's own liveness: Ok while its configuration is
+// loaded and valid, Not Ok once a reload has failed.
+func (a *App) healthHandler(w http.ResponseWriter, _ *http.Request) {
+	if a.healthy {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("Ok"))
+	} else {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("Not Ok"))
+	}
+}
+
 // WithHealthz sets up and adds health check endpoints (/healthz and /debug/pprof/)
 // and metrics endpoint (/metrics) to a new router
 func (a *App) WithHealthz() *App {
 	i := mux.NewRouter()
 	a.healthy = true
-	i.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		if a.healthy {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("Ok"))
-		} else {
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = w.Write([]byte("Not Ok"))
-		}
-	})
+	i.HandleFunc("/healthz", a.healthHandler)
 	i.HandleFunc("/debug/pprof/", pprof.Index)
 	i.Handle("/metrics", promhttp.Handler())
 	a.i = i
 	return a
 }
 
+// WithPrometheusHealth answers Prometheus's own health endpoints on the proxy
+// router. Clients that treat the proxy as a Prometheus server probe these before
+// querying and refuse to go on without a 200 — the MinIO console checks
+// /-/healthy before every dashboard query — but they are not part of the query
+// API, so nothing else answers them.
+//
+// Like Prometheus, they report liveness of this process only: no authentication,
+// no upstream call, no label store lookup. They reveal nothing a caller could not
+// learn from the connection succeeding, and every query is still authenticated
+// and enforced as before.
+func (a *App) WithPrometheusHealth() *App {
+	for _, path := range []string{"/-/healthy", "/-/ready"} {
+		a.e.HandleFunc(path, a.healthHandler).Methods(http.MethodGet, http.MethodHead)
+	}
+	return a
+}
+
 // WithRoutes initializes a new router, sets up logging middleware, and assigns
 // the router to the App's router field, returning the updated App.
 func (a *App) WithRoutes() *App {
+	if a.ingestOnly() {
+		log.Info().Msg("Ingest-only: no read routes")
+		return a
+	}
 	e := mux.NewRouter()
 	e.Use(a.loggingMiddleware)
 	e.SkipClean(true)
 	a.e = e
+	a.WithPrometheusHealth()
 	a.WithLoki()
 	a.WithThanos()
 	a.WithTempo()
@@ -61,7 +86,7 @@ func (a *App) WithRoutes() *App {
 // Routes are based on Loki HTTP API Query Endpoints:
 // https://grafana.com/docs/loki/latest/reference/loki-http-api/#query-endpoints
 func (a *App) WithLoki() *App {
-	if a.Cfg.Loki.URL == "" {
+	if a.Cfg().Loki.URL == "" {
 		log.Warn().Msg("Loki URL not set, skipping Loki routes")
 		return a
 	}
@@ -96,15 +121,15 @@ func (a *App) WithLoki() *App {
 		{Url: "/api/v1/query_exemplars", MatchWord: "query"},
 	}
 	lokiRouter := a.e.PathPrefix("/loki").Subrouter()
-	proxyCfg := a.Cfg.GetProxyConfig(a.Cfg.Loki.Proxy)
+	proxyCfg := a.Cfg().GetProxyConfig(a.Cfg().Loki.Proxy)
 	for _, route := range routes {
 		log.Trace().Any("route", route).Msg("Loki route")
 		lokiRouter.HandleFunc(route.Url, handlerWithProxy(route.MatchWord,
 			LogQLEnforcer(struct{}{}),
 			a.lokiProxy,
 			proxyCfg,
-			a.Cfg.Loki.UseMutualTLS,
-			a.Cfg.Loki.Headers,
+			a.Cfg().Loki.UseMutualTLS,
+			a.Cfg().Loki.Headers,
 			a)).Name(route.Url)
 	}
 	return a
@@ -121,7 +146,7 @@ func (a *App) WithLoki() *App {
 // - Thanos uses /api/v1/* exclusively
 // - Tempo uses /api/search, /api/v2/*, /api/metrics/*, /api/echo, /api/traces/*
 func (a *App) WithTempo() *App {
-	if a.Cfg.Tempo.URL == "" {
+	if a.Cfg().Tempo.URL == "" {
 		log.Warn().Msg("Tempo URL not set, skipping Tempo routes")
 		return a
 	}
@@ -147,15 +172,15 @@ func (a *App) WithTempo() *App {
 		{Url: "/api/v2/traces/{traceID}", MatchWord: ""},
 	}
 	tempoRouter := a.e.PathPrefix("").Subrouter()
-	proxyCfg := a.Cfg.GetProxyConfig(a.Cfg.Tempo.Proxy)
+	proxyCfg := a.Cfg().GetProxyConfig(a.Cfg().Tempo.Proxy)
 	for _, route := range routes {
 		log.Trace().Any("route", route).Msg("Tempo route")
 		tempoRouter.HandleFunc(route.Url, handlerWithProxy(route.MatchWord,
 			TraceQLEnforcer(struct{}{}),
 			a.tempoProxy,
 			proxyCfg,
-			a.Cfg.Tempo.UseMutualTLS,
-			a.Cfg.Tempo.Headers,
+			a.Cfg().Tempo.UseMutualTLS,
+			a.Cfg().Tempo.Headers,
 			a)).Name(route.Url)
 	}
 	return a
@@ -167,7 +192,7 @@ func (a *App) WithTempo() *App {
 // Routes are based on Prometheus HTTP API:
 // https://prometheus.io/docs/prometheus/latest/querying/api/
 func (a *App) WithThanos() *App {
-	if a.Cfg.Thanos.URL == "" {
+	if a.Cfg().Thanos.URL == "" {
 		log.Warn().Msg("Thanos URL not set, skipping Thanos routes")
 		return a
 	}
@@ -198,7 +223,7 @@ func (a *App) WithThanos() *App {
 		{Url: "/api/v1/index/stats", MatchWord: "query"},
 	}
 	thanosRouter := a.e.PathPrefix("").Subrouter()
-	proxyCfg := a.Cfg.GetProxyConfig(a.Cfg.Thanos.Proxy)
+	proxyCfg := a.Cfg().GetProxyConfig(a.Cfg().Thanos.Proxy)
 	for _, route := range routes {
 		log.Trace().Any("route", route).Msg("Thanos route")
 		thanosRouter.HandleFunc(route.Url,
@@ -206,8 +231,8 @@ func (a *App) WithThanos() *App {
 				PromQLEnforcer(struct{}{}),
 				a.thanosProxy,
 				proxyCfg,
-				a.Cfg.Thanos.UseMutualTLS,
-				a.Cfg.Thanos.Headers,
+				a.Cfg().Thanos.UseMutualTLS,
+				a.Cfg().Thanos.Headers,
 				a)).Name(route.Url)
 
 	}
@@ -288,37 +313,49 @@ func decideAlertRequest(route AlertRoute, method string, access AlertAccess) ale
 //
 // These endpoints carry no query parameter, so there is nothing for the PromQL/LogQL
 // enforcers to rewrite and no way to scope a response per tenant; access is by group
-// instead (see AlertingConfig). The ruler *configuration* API is deliberately absent, so
-// rules stay read-only in Grafana and whatever manages them as code remains authoritative.
+// instead (see AlertingConfig).
+//
+// The ruler *configuration* API is registered for GET only. A UI needs it to render a
+// single rule group — listing groups and opening one are different endpoints — but
+// leaving the write methods unrouted keeps rules read-only, so whatever manages them as
+// code stays authoritative.
 //
 // Prometheus HTTP API: https://prometheus.io/docs/prometheus/latest/querying/api/#rules
 func (a *App) WithRuler() *App {
-	if !a.Cfg.Alerting.Enabled {
+	if !a.Cfg().Alerting.Enabled {
 		log.Info().Msg("Alerting disabled, skipping ruler routes")
 		return a
 	}
 
-	if a.Cfg.Thanos.URL != "" {
+	if a.Cfg().Thanos.URL != "" {
 		// Mimir serves the Prometheus API under a base path; carry that on thanos.url
 		// so these sit at the root alongside the query routes, as Grafana expects.
 		routes := []AlertRoute{
 			{Url: "/api/v1/rules", Methods: []string{http.MethodGet}, Empty: emptyRuleGroups},
 			{Url: "/api/v1/alerts", Methods: []string{http.MethodGet}, Empty: emptyAlerts},
+			// Ruler configuration API, read-only (Mimir/Cortex).
+			{Url: "/config/v1/rules", Methods: []string{http.MethodGet}},
+			{Url: "/config/v1/rules/{namespace}", Methods: []string{http.MethodGet}},
+			{Url: "/config/v1/rules/{namespace}/{group}", Methods: []string{http.MethodGet}},
 		}
 		a.registerAlertRoutes(a.e.PathPrefix("").Subrouter(), routes, a.thanosProxy,
-			a.Cfg.GetProxyConfig(a.Cfg.Thanos.Proxy), a.Cfg.Thanos.UseMutualTLS,
-			a.Cfg.Thanos.Headers, "thanos-ruler")
+			a.Cfg().GetProxyConfig(a.Cfg().Thanos.Proxy), a.Cfg().Thanos.UseMutualTLS,
+			a.Cfg().Thanos.Headers, "thanos-ruler")
 	}
 
-	if a.Cfg.Loki.URL != "" {
-		// Loki's ruler serves the Prometheus-compatible API under /prometheus.
+	if a.Cfg().Loki.URL != "" {
+		// Loki's ruler serves the Prometheus-compatible API under /prometheus, and its
+		// own configuration API under /loki/api/v1/rules.
 		routes := []AlertRoute{
 			{Url: "/prometheus/api/v1/rules", Methods: []string{http.MethodGet}, Empty: emptyRuleGroups},
 			{Url: "/prometheus/api/v1/alerts", Methods: []string{http.MethodGet}, Empty: emptyAlerts},
+			{Url: "/loki/api/v1/rules", Methods: []string{http.MethodGet}},
+			{Url: "/loki/api/v1/rules/{namespace}", Methods: []string{http.MethodGet}},
+			{Url: "/loki/api/v1/rules/{namespace}/{group}", Methods: []string{http.MethodGet}},
 		}
 		a.registerAlertRoutes(a.e.PathPrefix("").Subrouter(), routes, a.lokiProxy,
-			a.Cfg.GetProxyConfig(a.Cfg.Loki.Proxy), a.Cfg.Loki.UseMutualTLS,
-			a.Cfg.Loki.Headers, "loki-ruler")
+			a.Cfg().GetProxyConfig(a.Cfg().Loki.Proxy), a.Cfg().Loki.UseMutualTLS,
+			a.Cfg().Loki.Headers, "loki-ruler")
 	}
 
 	return a
@@ -330,23 +367,26 @@ func (a *App) WithRuler() *App {
 // Silences are global to the Alertmanager and carry no tenant identity, so creating and
 // expiring them requires AlertAccessWrite rather than being label-scoped.
 //
-// The Cortex/Mimir Alertmanager *configuration* API is deliberately absent, for the same
-// reason as the ruler's: contact points and the routing tree are managed as code. It
-// would also be unroutable here — clients ask for it at /api/v1/alerts on the root
-// rather than under the Alertmanager base path, where it collides with the ruler's
+// The Cortex/Mimir Alertmanager *configuration* API is deliberately absent, unlike the
+// ruler's read-only equivalent above: contact points and the routing tree are managed as
+// code. It would also be unroutable here — clients ask for it at /api/v1/alerts on the
+// root rather than under the Alertmanager base path, where it collides with the ruler's
 // endpoint of the same name.
 //
 // Alertmanager HTTP API: https://prometheus.io/docs/alerting/latest/https/#api
 func (a *App) WithAlertmanager() *App {
-	if !a.Cfg.Alerting.Enabled {
+	if !a.Cfg().Alerting.Enabled {
 		return a
 	}
-	if a.Cfg.Alertmanager.URL == "" {
+	if a.Cfg().Alertmanager.URL == "" {
 		log.Warn().Msg("Alertmanager URL not set, skipping Alertmanager routes")
 		return a
 	}
 
 	routes := []AlertRoute{
+		// Grafana probes buildinfo through the plain data source proxy to identify the
+		// Alertmanager before it will talk to it at all.
+		{Url: "/api/v1/status/buildinfo", Methods: []string{http.MethodGet}},
 		{Url: "/api/v2/status", Methods: []string{http.MethodGet}},
 		{Url: "/api/v2/receivers", Methods: []string{http.MethodGet}},
 		{Url: "/api/v2/alerts", Methods: []string{http.MethodGet}},
@@ -355,10 +395,10 @@ func (a *App) WithAlertmanager() *App {
 		{Url: "/api/v2/silence/{id}", Methods: []string{http.MethodGet, http.MethodDelete}, WriteMethods: []string{http.MethodDelete}},
 	}
 
-	router := a.e.PathPrefix(a.Cfg.Alertmanager.PathPrefix).Subrouter()
+	router := a.e.PathPrefix(a.Cfg().Alertmanager.PathPrefix).Subrouter()
 	a.registerAlertRoutes(router, routes, a.alertmanagerProxy,
-		a.Cfg.GetProxyConfig(a.Cfg.Alertmanager.Proxy), a.Cfg.Alertmanager.UseMutualTLS,
-		a.Cfg.Alertmanager.Headers, "alertmanager")
+		a.Cfg().GetProxyConfig(a.Cfg().Alertmanager.Proxy), a.Cfg().Alertmanager.UseMutualTLS,
+		a.Cfg().Alertmanager.Headers, "alertmanager")
 
 	return a
 }
@@ -404,9 +444,9 @@ func alertHandler(route AlertRoute, proxy *httputil.ReverseProxy, proxyCfg Proxy
 			return
 		}
 
-		// Matches handlerWithProxy: the Director reads these for actor header injection.
-		ctx = context.WithValue(ctx, "username", oauthToken.PreferredUsername)
-		ctx = context.WithValue(ctx, "email", oauthToken.Email)
+		// Matches handlerWithProxy: the proxy's Rewrite reads these for actor header injection.
+		ctx = context.WithValue(ctx, ctxKeyUsername, oauthToken.PreferredUsername)
+		ctx = context.WithValue(ctx, ctxKeyEmail, oauthToken.Email)
 		r = r.WithContext(ctx)
 
 		setHeaders(r, tls, headers, a.ServiceAccountToken)
@@ -440,9 +480,9 @@ func handlerWithProxy(matchWord string, enforcer EnforceQL, proxy *httputil.Reve
 			return
 		}
 
-		// Store user information in context for actor header injection in Director function
-		ctx = context.WithValue(ctx, "username", oauthToken.PreferredUsername)
-		ctx = context.WithValue(ctx, "email", oauthToken.Email)
+		// Store user information in context for actor header injection in the proxy's Rewrite
+		ctx = context.WithValue(ctx, ctxKeyUsername, oauthToken.PreferredUsername)
+		ctx = context.WithValue(ctx, ctxKeyEmail, oauthToken.Email)
 		r = r.WithContext(ctx)
 
 		if skip {
@@ -462,98 +502,22 @@ func handlerWithProxy(matchWord string, enforcer EnforceQL, proxy *httputil.Reve
 	}
 }
 
-// handler function orchestrates the request flow through the proxy, comprising
-// authentication, conditional enforcement, and forwarding to the upstream server.
-// This is the legacy handler kept for backward compatibility during migration.
-// DEPRECATED: Use handlerWithProxy instead for better performance.
-func handler(matchWord string, enforcer EnforceQL, dsURL string, tls bool, headers map[string]string, a *App) func(http.ResponseWriter, *http.Request) {
-	upstreamURL, err := url.Parse(dsURL)
-	if err != nil {
-		log.Fatal().Err(err).Str("url", dsURL).Msg("Error parsing URL")
-	}
-	return func(w http.ResponseWriter, r *http.Request) {
-		oauthToken, err := getIdentity(r, a)
-		if err != nil {
-			logAndWriteError(w, http.StatusForbidden, err, "")
-		}
-
-		// Policy-based enforcement (only method supported)
-		policy, skip, err := validateLabelPolicy(oauthToken, a)
-		if err != nil {
-			logAndWriteError(w, http.StatusForbidden, err, "")
-			return
-		}
-
-		if skip {
-			streamUp(w, r, upstreamURL, tls, headers, a)
-			return
-		}
-
-		err = enforceRequest(r, enforcer, policy, matchWord)
-		if err != nil {
-			logAndWriteError(w, http.StatusForbidden, err, "")
-			return
-		}
-
-		if _, ok := enforcer.(LogQLEnforcer); ok {
-			err := setActorHeaderLogQL(r, oauthToken, a)
-			if err != nil {
-				logAndWriteError(w, http.StatusForbidden, err, "")
-				return
-			}
-		}
-		if _, ok := enforcer.(PromQLEnforcer); ok {
-			err := setActorHeaderPromQL(r, oauthToken, a)
-			if err != nil {
-				logAndWriteError(w, http.StatusForbidden, err, "")
-				return
-			}
-		}
-		if _, ok := enforcer.(TraceQLEnforcer); ok {
-			err := setActorHeaderTraceQL(r, oauthToken, a)
-			if err != nil {
-				logAndWriteError(w, http.StatusForbidden, err, "")
-				return
-			}
-		}
-
-		streamUp(w, r, upstreamURL, tls, headers, a)
-	}
-}
-
 func setActorHeaderLogQL(r *http.Request, token OAuthToken, a *App) error {
-	if a.Cfg.Loki.ActorHeader != "" {
+	if a.Cfg().Loki.ActorHeader != "" {
 		data := fmt.Sprintf("%s%s", token.PreferredUsername, token.Email)
 		encoded := base64.StdEncoding.EncodeToString([]byte(data))
-		r.Header.Set(a.Cfg.Loki.ActorHeader, encoded)
+		r.Header.Set(a.Cfg().Loki.ActorHeader, encoded)
 	}
 	return nil
 }
 
 func setActorHeaderPromQL(r *http.Request, token OAuthToken, a *App) error {
-	if a.Cfg.Thanos.ActorHeader != "" {
+	if a.Cfg().Thanos.ActorHeader != "" {
 		data := fmt.Sprintf("%s%s", token.PreferredUsername, token.Email)
 		encoded := base64.StdEncoding.EncodeToString([]byte(data))
-		r.Header.Set(a.Cfg.Thanos.ActorHeader, encoded)
+		r.Header.Set(a.Cfg().Thanos.ActorHeader, encoded)
 	}
 	return nil
-}
-
-func setActorHeaderTraceQL(r *http.Request, token OAuthToken, a *App) error {
-	if a.Cfg.Tempo.ActorHeader != "" {
-		data := fmt.Sprintf("%s%s", token.PreferredUsername, token.Email)
-		encoded := base64.StdEncoding.EncodeToString([]byte(data))
-		r.Header.Set(a.Cfg.Tempo.ActorHeader, encoded)
-	}
-	return nil
-}
-
-// streamUp forwards the provided HTTP request to the specified upstream URL using
-// a reverse proxy.It serves the upstream content back to the original client.
-func streamUp(w http.ResponseWriter, r *http.Request, upstreamURL *url.URL, tls bool, headers map[string]string, a *App) {
-	setHeaders(r, tls, headers, a.ServiceAccountToken)
-	proxy := httputil.NewSingleHostReverseProxy(upstreamURL)
-	proxy.ServeHTTP(w, r)
 }
 
 // setHeaders modifies the HTTP request headers to set the Authorization and

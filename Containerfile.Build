@@ -1,7 +1,17 @@
 # syntax=docker/dockerfile:1
 
 # Build stage
-FROM golang:1.25-alpine AS builder
+# Keep the patch level in step with the toolchain line in go.mod: the official image
+# sets GOTOOLCHAIN=local, so go.mod can't raise the version used here.
+# The builder runs on the build host's platform and cross-compiles for the target, so
+# multi-platform builds need no emulation.
+FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine AS builder
+
+# Set by buildx for each target platform.
+ARG TARGETOS TARGETARCH
+# Set by the release pipeline (.git is not in the build context, so git describe can't).
+ARG VERSION=dev
+ARG COMMIT=
 
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates tzdata
@@ -23,13 +33,10 @@ COPY . .
 # CGO_ENABLED=0: Static binary (no external dependencies)
 # -ldflags: Strip debug info and reduce binary size
 # -trimpath: Remove file system paths from binary
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -ldflags="-w -s -X main.version=$(git describe --tags --always --dirty 2>/dev/null || echo 'dev')" \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build \
+    -ldflags="-w -s -X main.Version=${VERSION} -X main.Commit=${COMMIT}" \
     -trimpath \
     -o lgtm-lbac-proxy .
-
-# Verify the binary works
-RUN ./lgtm-lbac-proxy --version 2>/dev/null || echo "Binary built successfully"
 
 # Final stage - minimal runtime image
 FROM scratch
@@ -55,8 +62,8 @@ USER 65532:65532
 # Add metadata labels
 LABEL org.opencontainers.image.title="LGTM LBAC Proxy" \
       org.opencontainers.image.description="Label-Based Access Control proxy for LGTM stack (Loki, Grafana, Tempo, Mimir)" \
-      org.opencontainers.image.vendor="binhnguyenduc" \
-      org.opencontainers.image.source="https://github.com/binhnguyenduc/lgtm-lbac-proxy" \
+      org.opencontainers.image.vendor="at-blacknight-projects" \
+      org.opencontainers.image.source="https://github.com/at-blacknight-projects/lgtm-lbac-proxy" \
       org.opencontainers.image.licenses="AGPL-3.0"
 
 # Health check using the binary itself (no curl needed)

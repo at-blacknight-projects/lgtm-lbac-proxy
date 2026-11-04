@@ -5,14 +5,19 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"fmt"
 	"github.com/fsnotify/fsnotify"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/viper"
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -83,6 +88,9 @@ type AuthConfig struct {
 	Audiences []string `mapstructure:"audiences"`
 	// Issuer, when set, is the exact `iss` the token must carry. Empty disables the check.
 	Issuer string `mapstructure:"issuer"`
+	// StaticKeys maps the SHA-256 (hex) of a long-lived key to an identity whose
+	// labels.yaml entry scopes what it may read. Off when empty. See statickeys.go.
+	StaticKeys map[string]string `mapstructure:"static_keys"`
 }
 
 type WebConfig struct {
@@ -193,6 +201,75 @@ type AlertingConfig struct {
 	AdminGroups  []string `mapstructure:"admin_groups"`
 }
 
+// IngestConfig is the OTLP write gateway: a dedicated listener that accepts OTLP/HTTP
+// pushes from token-holding clients and forwards them, rewritten, to an OTLP receiver.
+//
+// The listener serves only the push routes and a health probe — never the query,
+// ruler or Alertmanager routes — so it can be published more widely than the read
+// path. Identity on it is JWT-only: client-certificate and trusted-header identity are
+// not consulted.
+//
+// Writers maps a group (as carried in the configured groups claim) to the writer id
+// the caller pushes as. The gateway does not read or modify the payload: it forwards
+// the body unchanged and sends the writer id in WriterHeader, overwriting any value the
+// client supplied. The upstream derives tenancy from that header, so it must be
+// reachable only through the gateway. Groups are matched case-insensitively; viper
+// lowercases map keys. The admin group does not imply write access: every writer must
+// be named explicitly.
+//
+// Changes to Enabled, Port, the server certificate and the upstream URLs take effect on
+// restart; writers and the header name are read per request and follow config reloads.
+type IngestConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+	// Only runs the process as a write gateway alone: no label store is loaded, no read
+	// upstreams or routes are set up, and only the ingest and metrics listeners are
+	// served. Deploy it separately from the read proxy so that the pods reachable by
+	// writers hold no read access at all.
+	Only         bool              `mapstructure:"only"`
+	Port         int               `mapstructure:"port"`
+	ServerCert   string            `mapstructure:"server_cert"`
+	ServerKey    string            `mapstructure:"server_key"`
+	Writers      map[string]string `mapstructure:"writers"`        // group -> writer id
+	StaticKeys   map[string]string `mapstructure:"static_keys"`    // SHA-256 hex of a long-lived key -> writer id; for exporters that only send fixed headers
+	MaxBodyBytes int64             `mapstructure:"max_body_bytes"` // cap on the request body as sent (decompression is the upstream's to bound)
+	// WriterHeader is the request header the upstream receives the writer id in. For a
+	// multi-tenant backend this can be its tenant header, for example X-Scope-OrgID.
+	WriterHeader string `mapstructure:"writer_header"`
+
+	// Edges say how a push reached the gateway when it is published through more than
+	// one path, for example directly and through a CDN or tunnel. A push carrying an
+	// edge's marker header came through that edge; anything else is "direct". The result
+	// labels the ingest metrics and, with EdgeHeader set, is forwarded upstream. A direct
+	// client could send a marker header itself, so the edge is observational: never base
+	// an access decision on it.
+	Edges []IngestEdge `mapstructure:"edges"`
+	// EdgeHeader, when set, is the request header the upstream receives the edge name in,
+	// overwriting any value the client supplied. Empty = not forwarded.
+	EdgeHeader string `mapstructure:"edge_header"`
+
+	// Per-signal OTLP/HTTP upstreams. A signal with no URL is not routed. The request
+	// path (/v1/metrics, /v1/logs, /v1/traces) is appended to the URL's base path, so a
+	// collector takes its base URL and an OTLP endpoint mounted under a prefix (for
+	// example /otlp) takes that prefix.
+	Metrics IngestSignalConfig `mapstructure:"metrics"`
+	Logs    IngestSignalConfig `mapstructure:"logs"`
+	Traces  IngestSignalConfig `mapstructure:"traces"`
+}
+
+// IngestEdge is one way pushes can reach the gateway, recognised by a header the edge
+// adds to every request it forwards (Cloudflare adds Cf-Ray).
+type IngestEdge struct {
+	Name           string `mapstructure:"name"`             // label value, e.g. cloudflare
+	Header         string `mapstructure:"header"`           // marker header, e.g. Cf-Ray
+	ClientIPHeader string `mapstructure:"client_ip_header"` // optional: the edge's client address header, e.g. Cf-Connecting-Ip, logged at debug
+}
+
+// IngestSignalConfig is the upstream for one OTLP signal.
+type IngestSignalConfig struct {
+	URL   string       `mapstructure:"url"`
+	Proxy *ProxyConfig `mapstructure:"proxy"` // Per-upstream proxy configuration override
+}
+
 type Config struct {
 	Log          LogConfig          `mapstructure:"log"`
 	Auth         AuthConfig         `mapstructure:"auth"` // Authentication configuration (preferred)
@@ -206,6 +283,7 @@ type Config struct {
 	Loki         LokiConfig         `mapstructure:"loki"`
 	Tempo        TempoConfig        `mapstructure:"tempo"`
 	Alertmanager AlertmanagerConfig `mapstructure:"alertmanager"`
+	Ingest       IngestConfig       `mapstructure:"ingest"` // OTLP write gateway
 	LabelStore   LabelStoreConfig   `mapstructure:"labelstore"`
 }
 
@@ -222,12 +300,55 @@ type LabelStoreConfig struct {
 	// document which fields it uses and ignore the rest.
 }
 
-func (a *App) WithConfig() *App {
+// configSearchPaths are where config.yaml is looked for, in order. A variable so tests
+// can point the loader at a temporary directory.
+var configSearchPaths = []string{"/etc/config/config/", "./configs"}
+
+// Config reload outcomes, as the result label of lgtm_lbac_proxy_config_reloads_total.
+const (
+	reloadApplied  = "applied"
+	reloadRejected = "rejected"
+)
+
+var (
+	configReloads = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "lgtm_lbac_proxy_config_reloads_total",
+		Help: "Config file reloads, by result: applied, or rejected (the previous configuration keeps serving).",
+	}, []string{"result"})
+	configLastReloadSuccessful = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "lgtm_lbac_proxy_config_last_reload_successful",
+		Help: "1 if the last config reload was applied (or none has happened yet), 0 if it was rejected.",
+	})
+)
+
+// Cfg returns the live configuration. Treat it as read-only: a reload never changes a
+// published Config, it publishes a new one, so whatever a request reads from it is
+// consistent and is never being written.
+func (a *App) Cfg() *Config {
+	if a.cfg == nil {
+		return nil
+	}
+	return a.cfg.Load()
+}
+
+// SetConfig publishes cfg as the live configuration. Call it at startup before serving,
+// and from the reload path only with a Config that loadConfig accepted.
+func (a *App) SetConfig(cfg *Config) {
+	if a.cfg == nil {
+		a.cfg = new(atomic.Pointer[Config])
+	}
+	a.cfg.Store(cfg)
+}
+
+// newConfigViper returns a viper set up to find config.yaml, with the defaults every
+// load applies.
+func newConfigViper() *viper.Viper {
 	v := viper.NewWithOptions(viper.KeyDelimiter("::"))
 	v.SetConfigName("config")
 	v.SetConfigType("yaml")
-	v.AddConfigPath("/etc/config/config/")
-	v.AddConfigPath("./configs")
+	for _, p := range configSearchPaths {
+		v.AddConfigPath(p)
+	}
 
 	// Set defaults for label store configuration
 	v.SetDefault("labelstore::config_paths", []string{"/etc/config/labels/", "./configs"})
@@ -235,52 +356,150 @@ func (a *App) WithConfig() *App {
 	// Mimir and Cortex serve the Alertmanager API under /alertmanager. Set explicitly to
 	// "" for a standalone Alertmanager, which serves it at the root.
 	v.SetDefault("alertmanager::path_prefix", "/alertmanager")
+	v.SetDefault("ingest::max_body_bytes", defaultIngestMaxBodyBytes)
+	v.SetDefault("ingest::writer_header", defaultIngestWriterHeader)
+	return v
+}
 
-	err := v.MergeInConfig()
+// readConfig reads config.yaml afresh and returns it migrated and validated. Startup and
+// every reload go through it, so both apply exactly the same checks.
+func readConfig() (*Config, error) {
+	v := newConfigViper()
+	if err := v.MergeInConfig(); err != nil {
+		return nil, fmt.Errorf("reading config: %w", err)
+	}
+	return loadConfig(v)
+}
+
+// loadConfig builds a new Config from v: unmarshalled into a fresh struct (so a field
+// removed from the file is really gone), migrated and validated. It never touches the
+// live configuration.
+func loadConfig(v *viper.Viper) (*Config, error) {
+	cfg := &Config{}
+	if err := v.Unmarshal(cfg); err != nil {
+		return nil, fmt.Errorf("unmarshalling config: %w", err)
+	}
+	// Migrate legacy configuration to new auth section with backward compatibility
+	if err := migrateAuthConfig(cfg); err != nil {
+		return nil, err
+	}
+	// Set default label store config paths if not configured
+	if len(cfg.LabelStore.ConfigPaths) == 0 {
+		cfg.LabelStore.ConfigPaths = []string{"/etc/config/labels/", "./configs"}
+	}
+	// Validate Tempo configuration if provided
+	validateTempoConfig(cfg)
+	if err := validateIngestConfig(cfg); err != nil {
+		return nil, fmt.Errorf("invalid ingest configuration: %w", err)
+	}
+	if err := validateAuthStaticKeys(cfg); err != nil {
+		return nil, fmt.Errorf("invalid static key configuration: %w", err)
+	}
+	return cfg, nil
+}
+
+func (a *App) WithConfig() *App {
+	cfg, err := readConfig()
 	if err != nil {
+		log.Fatal().Err(err).Msg("Invalid configuration")
+		return nil
+	}
+	a.SetConfig(cfg)
+	configLastReloadSuccessful.Set(1)
+
+	// The watcher only signals that the file changed. Its own copy isn't used: if the
+	// new file doesn't parse, viper keeps the old values and still fires the callback,
+	// which would look like a successful reload. reloadConfig reads the file afresh.
+	w := newConfigViper()
+	if err := w.MergeInConfig(); err != nil {
 		log.Fatal().Err(err).Msg("Error no config found")
 		return nil
 	}
-	a.Cfg = &Config{}
-	err = v.Unmarshal(a.Cfg)
-	if err != nil {
-		log.Fatal().Err(err).Msg("Error while unmarshalling config file")
-	}
-
-	// Migrate legacy configuration to new auth section with backward compatibility
-	a.migrateAuthConfig()
-	// Set default label store config paths if not configured
-	if len(a.Cfg.LabelStore.ConfigPaths) == 0 {
-		a.Cfg.LabelStore.ConfigPaths = []string{"/etc/config/labels/", "./configs"}
-	}
-	// Validate Tempo configuration if provided
-	a.validateTempoConfig()
-	v.OnConfigChange(func(e fsnotify.Event) {
+	w.OnConfigChange(func(e fsnotify.Event) {
 		log.Info().Str("file", e.Name).Msg("Config file changed")
-		err := v.Unmarshal(a.Cfg)
-		if err != nil {
-			log.Error().Err(err).Msg("Error while unmarshalling config file")
-			a.healthy = false
-		}
-		// Migrate legacy configuration to new auth section
-		a.migrateAuthConfig()
-		// Set default label store config paths if not configured
-		if len(a.Cfg.LabelStore.ConfigPaths) == 0 {
-			a.Cfg.LabelStore.ConfigPaths = []string{"/etc/config/labels/", "./configs"}
-		}
-		// Validate Tempo configuration if provided
-		a.validateTempoConfig()
-		zerolog.SetGlobalLevel(zerolog.Level(a.Cfg.Log.Level))
+		a.reloadConfig()
 	})
-	v.WatchConfig()
-	zerolog.SetGlobalLevel(zerolog.Level(a.Cfg.Log.Level))
-	log.Debug().Any("config", a.Cfg).Msg("")
+	w.WatchConfig()
+	zerolog.SetGlobalLevel(zerolog.Level(cfg.Log.Level))
+	log.Debug().Any("config", cfg).Msg("")
 	return a
 }
 
+// reloadConfig rebuilds the configuration from the file exactly as startup does and
+// publishes it only if it is valid. A rejected file is logged and counted, and the
+// previous configuration keeps serving: a bad edit to a ConfigMap that every replica
+// mounts must not take them all down, so this path never exits and never marks the
+// process unhealthy.
+func (a *App) reloadConfig() {
+	next, err := readConfig()
+	if err != nil {
+		configReloads.WithLabelValues(reloadRejected).Inc()
+		configLastReloadSuccessful.Set(0)
+		log.Error().Err(err).Msg("Config reload rejected; still serving the previous configuration")
+		return
+	}
+	if changed := restartOnlyChanges(a.Cfg(), next); len(changed) > 0 {
+		log.Warn().Strs("settings", changed).Msg("These changed settings are read only at startup and take effect after a restart")
+	}
+	a.SetConfig(next)
+	zerolog.SetGlobalLevel(zerolog.Level(next.Log.Level))
+	configReloads.WithLabelValues(reloadApplied).Inc()
+	configLastReloadSuccessful.Set(1)
+	log.Info().Msg("Config reloaded")
+}
+
+// restartOnlyChanges names the settings that differ between old and next but are only
+// read at startup: listeners and their certificates, the upstreams (whose proxies,
+// headers and actor headers are built once), the JWKS sources, the service account
+// token, the label store location, and whether the alerting and ingest routes exist.
+// A reload publishes them, but nothing reads them again until a restart.
+func restartOnlyChanges(old, next *Config) []string {
+	if old == nil {
+		return nil
+	}
+	clientCertListener := func(c *Config) any {
+		cc := c.Auth.ClientCert
+		return []any{cc.Enabled, cc.Source, cc.MTLSPort, cc.ServerCert, cc.ServerKey, cc.CAPath, cc.ClientAuth}
+	}
+	ingestListener := func(c *Config) any {
+		in := c.Ingest
+		return []any{in.Enabled, in.Only, in.Port, in.ServerCert, in.ServerKey, in.Metrics, in.Logs, in.Traces}
+	}
+	settings := []struct {
+		name      string
+		old, next any
+	}{
+		{"web.proxy_port", old.Web.ProxyPort, next.Web.ProxyPort},
+		{"web.metrics_port", old.Web.MetricsPort, next.Web.MetricsPort},
+		{"web.host", old.Web.Host, next.Web.Host},
+		{"web.tls_verify_skip", old.Web.TLSVerifySkip, next.Web.TLSVerifySkip},
+		{"web.trusted_root_ca_path", old.Web.TrustedRootCaPath, next.Web.TrustedRootCaPath},
+		{"web.service_account_token", old.Web.ServiceAccountToken, next.Web.ServiceAccountToken},
+		{"dev.enabled", old.Dev.Enabled, next.Dev.Enabled},
+		{"auth.jwks_cert_url", old.Auth.JwksCertURL, next.Auth.JwksCertURL},
+		{"alert (JWKS source)", []any{old.Alert.Enabled, old.Alert.CertURL, old.Alert.Cert}, []any{next.Alert.Enabled, next.Alert.CertURL, next.Alert.Cert}},
+		{"auth.client_cert listener", clientCertListener(old), clientCertListener(next)},
+		{"thanos", old.Thanos, next.Thanos},
+		{"loki", old.Loki, next.Loki},
+		{"tempo", old.Tempo, next.Tempo},
+		{"alertmanager", old.Alertmanager, next.Alertmanager},
+		{"proxy", old.Proxy, next.Proxy},
+		{"alerting.enabled", old.Alerting.Enabled, next.Alerting.Enabled},
+		{"ingest listener and upstreams", ingestListener(old), ingestListener(next)},
+		{"labelstore.config_paths", old.LabelStore.ConfigPaths, next.LabelStore.ConfigPaths},
+	}
+	var changed []string
+	for _, s := range settings {
+		if !reflect.DeepEqual(s.old, s.next) {
+			changed = append(changed, s.name)
+		}
+	}
+	return changed
+}
+
 func (a *App) WithSAT() *App {
-	if a.Cfg.Dev.Enabled {
-		a.ServiceAccountToken = a.Cfg.Web.ServiceAccountToken
+	if a.Cfg().Dev.Enabled {
+		a.ServiceAccountToken = a.Cfg().Web.ServiceAccountToken
 		return a
 	}
 	sa, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
@@ -304,8 +523,8 @@ func (a *App) WithTLSConfig() *App {
 	}
 	log.Debug().Any("rootCAs", rootCAs).Msg("")
 
-	if a.Cfg.Web.TrustedRootCaPath != "" {
-		err := filepath.Walk(a.Cfg.Web.TrustedRootCaPath, func(path string, info os.FileInfo, err error) error {
+	if a.Cfg().Web.TrustedRootCaPath != "" {
+		err := filepath.Walk(a.Cfg().Web.TrustedRootCaPath, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return err
 			}
@@ -331,32 +550,34 @@ func (a *App) WithTLSConfig() *App {
 
 	var certificates []tls.Certificate
 
-	lokiCert, err := tls.LoadX509KeyPair(a.Cfg.Loki.Cert, a.Cfg.Loki.Key)
+	lokiCert, err := tls.LoadX509KeyPair(a.Cfg().Loki.Cert, a.Cfg().Loki.Key)
 	if err != nil {
 		log.Error().Err(err).Msg("Error while loading loki certificate")
 	} else {
-		log.Debug().Str("path", a.Cfg.Loki.Cert).Msg("Adding Loki certificate")
+		log.Debug().Str("path", a.Cfg().Loki.Cert).Msg("Adding Loki certificate")
 		certificates = append(certificates, lokiCert)
 	}
 
-	thanosCert, err := tls.LoadX509KeyPair(a.Cfg.Thanos.Cert, a.Cfg.Thanos.Key)
+	thanosCert, err := tls.LoadX509KeyPair(a.Cfg().Thanos.Cert, a.Cfg().Thanos.Key)
 	if err != nil {
 		log.Error().Err(err).Msg("Error while loading thanos certificate")
 	} else {
-		log.Debug().Str("path", a.Cfg.Thanos.Cert).Msg("Adding Thanos certificate")
+		log.Debug().Str("path", a.Cfg().Thanos.Cert).Msg("Adding Thanos certificate")
 		certificates = append(certificates, thanosCert)
 	}
 
-	tempoCert, err := tls.LoadX509KeyPair(a.Cfg.Tempo.Cert, a.Cfg.Tempo.Key)
+	tempoCert, err := tls.LoadX509KeyPair(a.Cfg().Tempo.Cert, a.Cfg().Tempo.Key)
 	if err != nil {
 		log.Error().Err(err).Msg("Error while loading tempo certificate")
 	} else {
-		log.Debug().Str("path", a.Cfg.Tempo.Cert).Msg("Adding Tempo certificate")
+		log.Debug().Str("path", a.Cfg().Tempo.Cert).Msg("Adding Tempo certificate")
 		certificates = append(certificates, tempoCert)
 	}
 
+	a.rootCAs = rootCAs
+
 	config := &tls.Config{
-		InsecureSkipVerify: a.Cfg.Web.TLSVerifySkip,
+		InsecureSkipVerify: a.Cfg().Web.TLSVerifySkip,
 		RootCAs:            rootCAs,
 		Certificates:       certificates,
 	}
@@ -367,20 +588,20 @@ func (a *App) WithTLSConfig() *App {
 
 func (a *App) WithJWKS() *App {
 	log.Info().Msg("Init JWKS config")
-	urls := []string{a.Cfg.Web.JwksCertURL}
-	if a.Cfg.Alert.Enabled {
-		urls = []string{a.Cfg.Web.JwksCertURL, a.Cfg.Alert.CertURL}
+	urls := []string{a.Cfg().Web.JwksCertURL}
+	if a.Cfg().Alert.Enabled {
+		urls = []string{a.Cfg().Web.JwksCertURL, a.Cfg().Alert.CertURL}
 	}
 	var cert json.RawMessage
 	cert = nil
-	if a.Cfg.Alert.Cert != "" {
-		cert = json.RawMessage(a.Cfg.Alert.Cert)
+	if a.Cfg().Alert.Cert != "" {
+		cert = json.RawMessage(a.Cfg().Alert.Cert)
 	}
 	jwks, err := NewCombinedJwks(context.Background(), urls, cert)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to create a keyfunc from the server's URL")
 	}
-	log.Info().Str("url", a.Cfg.Web.JwksCertURL).Msg("JWKS URL")
+	log.Info().Str("url", a.Cfg().Web.JwksCertURL).Msg("JWKS URL")
 	a.Jwks = jwks
 	return a
 }
@@ -390,11 +611,13 @@ func (a *App) WithJWKS() *App {
 // 1. New config only (auth section present): Use auth section, set defaults
 // 2. Legacy config only (web section with auth fields): Migrate to auth section with deprecation warning
 // 3. Mixed config (both present): Prefer auth section, log warning if web fields also present
-func (a *App) migrateAuthConfig() {
-	hasNewAuth := a.Cfg.Auth.JwksCertURL != "" || a.Cfg.Auth.AuthHeader != "" ||
-		a.Cfg.Auth.Claims.Username != "" || a.Cfg.Auth.Claims.Email != "" || a.Cfg.Auth.Claims.Groups != ""
-	hasLegacyAuth := a.Cfg.Web.JwksCertURL != "" || a.Cfg.Web.AuthHeader != "" ||
-		a.Cfg.Web.OAuthUsernameClaim != "" || a.Cfg.Web.OAuthEmailClaim != "" || a.Cfg.Web.OAuthGroupName != ""
+//
+// It changes cfg in place, so call it only on a Config that is not yet published.
+func migrateAuthConfig(cfg *Config) error {
+	hasNewAuth := cfg.Auth.JwksCertURL != "" || cfg.Auth.AuthHeader != "" ||
+		cfg.Auth.Claims.Username != "" || cfg.Auth.Claims.Email != "" || cfg.Auth.Claims.Groups != ""
+	hasLegacyAuth := cfg.Web.JwksCertURL != "" || cfg.Web.AuthHeader != "" ||
+		cfg.Web.OAuthUsernameClaim != "" || cfg.Web.OAuthEmailClaim != "" || cfg.Web.OAuthGroupName != ""
 
 	if hasNewAuth && hasLegacyAuth {
 		// Mixed configuration: both new and legacy present
@@ -404,109 +627,110 @@ func (a *App) migrateAuthConfig() {
 		log.Warn().Msg("DEPRECATED: web.jwks_cert_url, web.auth_header, web.oauth_*_claim fields are deprecated. Please migrate to 'auth' section. See documentation for migration guide.")
 
 		// Migrate JWKS URL
-		if a.Cfg.Web.JwksCertURL != "" {
-			a.Cfg.Auth.JwksCertURL = a.Cfg.Web.JwksCertURL
+		if cfg.Web.JwksCertURL != "" {
+			cfg.Auth.JwksCertURL = cfg.Web.JwksCertURL
 		}
 
 		// Migrate auth header
-		if a.Cfg.Web.AuthHeader != "" {
-			a.Cfg.Auth.AuthHeader = a.Cfg.Web.AuthHeader
+		if cfg.Web.AuthHeader != "" {
+			cfg.Auth.AuthHeader = cfg.Web.AuthHeader
 		}
 
 		// Migrate claim names
-		if a.Cfg.Web.OAuthUsernameClaim != "" {
-			a.Cfg.Auth.Claims.Username = a.Cfg.Web.OAuthUsernameClaim
+		if cfg.Web.OAuthUsernameClaim != "" {
+			cfg.Auth.Claims.Username = cfg.Web.OAuthUsernameClaim
 		}
-		if a.Cfg.Web.OAuthEmailClaim != "" {
-			a.Cfg.Auth.Claims.Email = a.Cfg.Web.OAuthEmailClaim
+		if cfg.Web.OAuthEmailClaim != "" {
+			cfg.Auth.Claims.Email = cfg.Web.OAuthEmailClaim
 		}
-		if a.Cfg.Web.OAuthGroupName != "" {
-			a.Cfg.Auth.Claims.Groups = a.Cfg.Web.OAuthGroupName
+		if cfg.Web.OAuthGroupName != "" {
+			cfg.Auth.Claims.Groups = cfg.Web.OAuthGroupName
 		}
 	}
 
 	// Set defaults for auth configuration
-	if a.Cfg.Auth.AuthHeader == "" {
-		a.Cfg.Auth.AuthHeader = "Authorization"
+	if cfg.Auth.AuthHeader == "" {
+		cfg.Auth.AuthHeader = "Authorization"
 	}
-	if a.Cfg.Auth.Claims.Username == "" {
-		a.Cfg.Auth.Claims.Username = "preferred_username"
+	if cfg.Auth.Claims.Username == "" {
+		cfg.Auth.Claims.Username = "preferred_username"
 	}
-	if a.Cfg.Auth.Claims.Email == "" {
-		a.Cfg.Auth.Claims.Email = "email"
+	if cfg.Auth.Claims.Email == "" {
+		cfg.Auth.Claims.Email = "email"
 	}
-	if a.Cfg.Auth.Claims.Groups == "" {
-		a.Cfg.Auth.Claims.Groups = "groups"
+	if cfg.Auth.Claims.Groups == "" {
+		cfg.Auth.Claims.Groups = "groups"
 	}
-	if a.Cfg.Auth.TrustedClientHeader.Enabled && a.Cfg.Auth.TrustedClientHeader.CNHeader == "" {
-		a.Cfg.Auth.TrustedClientHeader.CNHeader = "X-Client-CN"
+	if cfg.Auth.TrustedClientHeader.Enabled && cfg.Auth.TrustedClientHeader.CNHeader == "" {
+		cfg.Auth.TrustedClientHeader.CNHeader = "X-Client-CN"
 	}
-	if a.Cfg.Auth.ClientCert.Enabled {
-		if a.Cfg.Auth.ClientCert.Source == "" {
-			a.Cfg.Auth.ClientCert.Source = "mtls"
+	if cfg.Auth.ClientCert.Enabled {
+		if cfg.Auth.ClientCert.Source == "" {
+			cfg.Auth.ClientCert.Source = "mtls"
 		}
-		if a.Cfg.Auth.ClientCert.CertHeader == "" {
-			a.Cfg.Auth.ClientCert.CertHeader = "X-Forwarded-Client-Cert"
+		if cfg.Auth.ClientCert.CertHeader == "" {
+			cfg.Auth.ClientCert.CertHeader = "X-Forwarded-Client-Cert"
 		}
-		if a.Cfg.Auth.ClientCert.IdentityFrom == "" {
-			a.Cfg.Auth.ClientCert.IdentityFrom = CertFieldCN
+		if cfg.Auth.ClientCert.IdentityFrom == "" {
+			cfg.Auth.ClientCert.IdentityFrom = CertFieldCN
 		}
-		if a.Cfg.Auth.ClientCert.ClientAuth == "" {
-			a.Cfg.Auth.ClientCert.ClientAuth = "require"
+		if cfg.Auth.ClientCert.ClientAuth == "" {
+			cfg.Auth.ClientCert.ClientAuth = "require"
 		}
-		if err := a.Cfg.Auth.ClientCert.Admission.Validate(); err != nil {
-			log.Fatal().Err(err).Msg("Invalid client_cert.admission policy")
+		if err := cfg.Auth.ClientCert.Admission.Validate(); err != nil {
+			return fmt.Errorf("invalid client_cert.admission policy: %w", err)
 		}
 	}
-	a.Cfg.Auth.AuthScheme = strings.TrimSpace(a.Cfg.Auth.AuthScheme)
+	cfg.Auth.AuthScheme = strings.TrimSpace(cfg.Auth.AuthScheme)
 
 	// Also maintain backward compatibility fields for existing code that still references them
 	// This allows gradual migration of code references
-	a.Cfg.Web.JwksCertURL = a.Cfg.Auth.JwksCertURL
-	a.Cfg.Web.AuthHeader = a.Cfg.Auth.AuthHeader
-	a.Cfg.Web.OAuthUsernameClaim = a.Cfg.Auth.Claims.Username
-	a.Cfg.Web.OAuthEmailClaim = a.Cfg.Auth.Claims.Email
-	a.Cfg.Web.OAuthGroupName = a.Cfg.Auth.Claims.Groups
+	cfg.Web.JwksCertURL = cfg.Auth.JwksCertURL
+	cfg.Web.AuthHeader = cfg.Auth.AuthHeader
+	cfg.Web.OAuthUsernameClaim = cfg.Auth.Claims.Username
+	cfg.Web.OAuthEmailClaim = cfg.Auth.Claims.Email
+	cfg.Web.OAuthGroupName = cfg.Auth.Claims.Groups
 
 	log.Debug().
-		Str("jwks_url", a.Cfg.Auth.JwksCertURL).
-		Str("auth_header", a.Cfg.Auth.AuthHeader).
-		Str("username_claim", a.Cfg.Auth.Claims.Username).
-		Str("email_claim", a.Cfg.Auth.Claims.Email).
-		Str("groups_claim", a.Cfg.Auth.Claims.Groups).
-		Str("auth_scheme", a.Cfg.Auth.AuthScheme).
+		Str("jwks_url", cfg.Auth.JwksCertURL).
+		Str("auth_header", cfg.Auth.AuthHeader).
+		Str("username_claim", cfg.Auth.Claims.Username).
+		Str("email_claim", cfg.Auth.Claims.Email).
+		Str("groups_claim", cfg.Auth.Claims.Groups).
+		Str("auth_scheme", cfg.Auth.AuthScheme).
 		Msg("Authentication configuration loaded")
+	return nil
 }
 
 // validateTempoConfig validates Tempo configuration settings
-func (a *App) validateTempoConfig() {
+func validateTempoConfig(cfg *Config) {
 	// Skip validation if Tempo URL is not configured
-	if a.Cfg.Tempo.URL == "" {
+	if cfg.Tempo.URL == "" {
 		return
 	}
 
 	// Validate URL format
-	if !strings.HasPrefix(a.Cfg.Tempo.URL, "http://") && !strings.HasPrefix(a.Cfg.Tempo.URL, "https://") {
-		log.Warn().Str("url", a.Cfg.Tempo.URL).Msg("Tempo URL should start with http:// or https://")
+	if !strings.HasPrefix(cfg.Tempo.URL, "http://") && !strings.HasPrefix(cfg.Tempo.URL, "https://") {
+		log.Warn().Str("url", cfg.Tempo.URL).Msg("Tempo URL should start with http:// or https://")
 	}
 
 	// Validate certificate files exist if mTLS is enabled
-	if a.Cfg.Tempo.UseMutualTLS {
-		if a.Cfg.Tempo.Cert != "" {
-			if _, err := os.Stat(a.Cfg.Tempo.Cert); os.IsNotExist(err) {
-				log.Error().Str("cert", a.Cfg.Tempo.Cert).Msg("Tempo certificate file not found")
+	if cfg.Tempo.UseMutualTLS {
+		if cfg.Tempo.Cert != "" {
+			if _, err := os.Stat(cfg.Tempo.Cert); os.IsNotExist(err) {
+				log.Error().Str("cert", cfg.Tempo.Cert).Msg("Tempo certificate file not found")
 			}
 		}
-		if a.Cfg.Tempo.Key != "" {
-			if _, err := os.Stat(a.Cfg.Tempo.Key); os.IsNotExist(err) {
-				log.Error().Str("key", a.Cfg.Tempo.Key).Msg("Tempo key file not found")
+		if cfg.Tempo.Key != "" {
+			if _, err := os.Stat(cfg.Tempo.Key); os.IsNotExist(err) {
+				log.Error().Str("key", cfg.Tempo.Key).Msg("Tempo key file not found")
 			}
 		}
 	}
 
 	log.Debug().
-		Str("url", a.Cfg.Tempo.URL).
-		Bool("use_mutual_tls", a.Cfg.Tempo.UseMutualTLS).
+		Str("url", cfg.Tempo.URL).
+		Bool("use_mutual_tls", cfg.Tempo.UseMutualTLS).
 		Msg("Tempo configuration loaded")
 }
 
