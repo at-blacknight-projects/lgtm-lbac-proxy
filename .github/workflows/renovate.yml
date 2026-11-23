@@ -1,0 +1,38 @@
+name: Renovate
+
+# Runs Renovate on this repository from the shared ci-templates workflow, as the
+# release app. The policy is .github/renovate.json, which extends the ci-templates
+# preset: updates open on Monday mornings, vulnerability fixes at any time, and the Go
+# toolchain line and golang builder image move together. PRs target the default
+# branch (alpha).
+
+on:
+  schedule:
+    - cron: "41 */4 * * *"
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "off for a real run, or lookup / full to only report."
+        type: choice
+        options: ["off", lookup, full]
+        default: "off"
+      log-level:
+        description: Log level.
+        type: choice
+        options: [info, debug]
+        default: info
+
+permissions:
+  contents: read
+
+jobs:
+  renovate:
+    uses: at-blacknight-projects/ci-templates/.github/workflows/renovate.yml@v0
+    with:
+      repositories: |
+        at-blacknight-projects/lgtm-lbac-proxy
+      dry-run: ${{ inputs.dry-run != 'off' && inputs.dry-run || '' }}
+      log-level: ${{ inputs.log-level || 'info' }}
+    secrets:
+      app-id: ${{ secrets.RELEASE_APP_ID }}
+      app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
