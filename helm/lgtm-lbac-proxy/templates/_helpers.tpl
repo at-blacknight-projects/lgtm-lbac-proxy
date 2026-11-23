@@ -61,6 +61,22 @@ otherwise empty, so it can be used directly in an if.
 {{- end }}
 
 {{/*
+"true" when this release runs as a management listener alone (management.enabled and
+management.only), otherwise empty.
+*/}}
+{{- define "lgtm-lbac-proxy.managementOnly" -}}
+{{- if and .Values.management .Values.management.enabled .Values.management.only }}true{{- end }}
+{{- end }}
+
+{{/*
+"true" when an "only" mode switches the read path off: no read routes, read listeners,
+label store or read RBAC. Otherwise empty, so it can be used directly in an if.
+*/}}
+{{- define "lgtm-lbac-proxy.readPathDisabled" -}}
+{{- if or (include "lgtm-lbac-proxy.ingestOnly" .) (include "lgtm-lbac-proxy.managementOnly" .) }}true{{- end }}
+{{- end }}
+
+{{/*
 Create the name of the service account to use
 */}}
 {{- define "lgtm-lbac-proxy.serviceAccountName" -}}

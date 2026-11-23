@@ -1,22 +1,3 @@
-<!-- OPENSPEC:START -->
-# OpenSpec Instructions
-
-These instructions are for AI assistants working in this project.
-
-Always open `@/openspec/AGENTS.md` when the request:
-- Mentions planning or proposals (words like proposal, spec, change, plan)
-- Introduces new capabilities, breaking changes, architecture shifts, or big performance/security work
-- Sounds ambiguous and you need the authoritative spec before coding
-
-Use `@/openspec/AGENTS.md` to learn:
-- How to create and apply change proposals
-- Spec format and conventions
-- Project structure and guidelines
-
-Keep this managed block so 'openspec update' can refresh the instructions.
-
-<!-- OPENSPEC:END -->
-
 # LGTM LBAC Proxy
 
 Multi-tenancy Label-Based Access Control authorization proxy for LGTM stack (Loki, Grafana, Tempo, Mimir/Prometheus)
@@ -67,7 +48,7 @@ go test -bench=. -benchmem -run=^$
 - **Memory Efficient**: Single storage of parsed policies (~50% memory reduction)
 - **Cache Strategy**: Individual policies cached, merged per-request for specific user+groups
 
-**Servers**: `:8080` (proxy) | `:8081` (metrics) | optional mTLS port | optional ingest TLS port (`ingest.port`; with `ingest.only`, only metrics + ingest run)
+**Servers**: `:8080` (proxy) | `:8081` (metrics) | optional mTLS port | optional ingest TLS port (`ingest.port`) | optional management TLS port (`management.port`). With `ingest.only` or `management.only` the read path is off: only metrics and the enabled write listeners run (`readPathDisabled()`)
 
 ## File Organization
 
@@ -80,6 +61,7 @@ go test -bench=. -benchmem -run=^$
 | **Enforcers** | `enforcer_promql.go`, `enforcer_logql.go`, `enforcer_traceql.go` | Parse → validate → inject labels → return modified query |
 | **Routing** | `routes.go` | HTTP endpoints, orchestrate auth→validate→enforce→proxy |
 | **Ingest** | `ingest.go` | Optional OTLP write gateway: own TLS listener and router, JWT-only, group→writer id, forwards with a writer header; `ingest.only` runs it alone |
+| **Management** | `management.go` | Optional rule/Alertmanager configuration listener: own TLS listener and router (`a.m`), management static key or JWT, group→manager id, forwards to the Mimir ruler, Loki ruler or Mimir Alertmanager config API with configured headers (tenant pinning), audit-logs every change; `management.only` runs it alone |
 | **Tests** | `*_test.go` (76+ tests), `*_bench_test.go` | Unit tests, integration tests, performance benchmarks |
 | **Config** | `configs/config.yaml`, `configs/labels.yaml` | Main config, user/group label mappings (extended only) |
 
@@ -306,7 +288,10 @@ Output: { resource.namespace="prod" && resource.team="backend" && span.http.stat
 | **Thanos/Prometheus** | `/api/v1/query`, `/api/v1/query_range`, `/api/v1/series`, etc. |
 | **Tempo** | `/api/echo`, `/api/search`, `/api/v2/search`, `/api/traces/{traceID}`, `/api/metrics/*` |
 | **Ingest** (separate listener, `ingest.port`) | `POST /v1/metrics`, `POST /v1/logs`, `POST /v1/traces` (per configured signal), `GET /healthz` |
+| **Management** (separate listener, `management.port`) | `/prometheus/config/v1/rules[/{ns}[/{group}]]`, `/loki/api/v1/rules[/{ns}[/{group}]]`, `/api/v1/alerts` (per configured upstream; GET plus POST/DELETE where the API has them), `GET /healthz` |
 
 All read routes: `auth → validate labels → enforce query → proxy to upstream`
 
 Ingest routes: `JWT (getToken, never getIdentity) → resolve writer from groups → cap body → overwrite writer header, drop credentials → stream body unchanged to the signal's upstream`. The write router (`a.w`) and read router (`a.e`) are separate, so neither listener can serve the other's routes. The upstream must be reachable only through the gateway, since it trusts the writer header.
+
+Management routes: `management static key or JWT (getToken, never getIdentity; read static keys and the admin group grant nothing) → resolve manager from key or groups → cap body → drop credentials, set upstream headers → forward unchanged → audit log (info for writes)`. The management router (`a.m`) is separate from the read and write routers; the read router's ruler configuration routes stay GET-only.

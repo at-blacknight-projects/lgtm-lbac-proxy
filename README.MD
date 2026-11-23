@@ -58,6 +58,10 @@ On top of binhnguyenduc/lgtm-lbac-proxy:
   It forwards a writer header and an ingest-edge label, and can run in an ingest-only release
   with no read access. See [OTLP write gateway](#otlp-write-gateway).
 - **Alerting**: ruler and Alertmanager endpoints proxied with group-based access.
+- **Rule and Alertmanager configuration management**: an authenticated listener for the
+  Mimir and Loki ruler configuration APIs and the Mimir Alertmanager configuration API, so
+  `mimirtool` and `lokitool` can manage them as code. Every change is attributed to a
+  manager and logged. See [Rule and Alertmanager configuration management](#rule-and-alertmanager-configuration-management).
 - **Authentication**:
   - client-certificate (mTLS) identity with configurable admission
   - JWT audience and issuer validation
@@ -66,7 +70,8 @@ On top of binhnguyenduc/lgtm-lbac-proxy:
   A bad file is rejected and the previous config keeps serving. Reload metrics are exported.
 - **Prometheus compatibility**: `/-/healthy` and `/-/ready` on the proxy port. A configured
   upstream base path, such as Mimir's `/prometheus`, is honoured.
-- **Helm**: an ingest listener, ingest-only releases and `extraManifests`.
+- **Helm**: ingest and management listeners, ingest-only and management-only releases, and
+  `extraManifests`.
 - **Supply chain**:
   - built with Go 1.26
   - dependencies kept past known advisories, with a govulncheck- and Trivy-gated CI
@@ -173,6 +178,7 @@ The proxy intercepts queries to Prometheus/Thanos, Loki, and Tempo, validates JW
 - ✅ **Traces**: Tempo (TraceQL enforcement) 🆕
 - ✅ **Alerting**: ruler rules/alerts + Alertmanager API (group-based access) 🆕
 - ✅ **OTLP ingest**: token-authenticated OTLP/HTTP write gateway (opt-in) 🆕
+- ✅ **Rule management**: authenticated ruler and Alertmanager configuration writes (opt-in) 🆕
 - ⏳ **Profiles**: Planned for future release
 
 The ruler and Alertmanager endpoints return whole rule groups, alert instances and
@@ -199,7 +205,8 @@ The ruler's *configuration* API is proxied for `GET` only — a UI needs it to o
 single rule group, since listing groups and opening one are different endpoints — while
 the write methods stay unrouted, so rules remain read-only. The Cortex/Mimir
 Alertmanager's configuration API is not proxied at all, keeping contact points and the
-routing tree as-code. Point Grafana's Alertmanager data source at
+routing tree as-code. Writes to both go through the separate
+[management listener](#rule-and-alertmanager-configuration-management) instead. Point Grafana's Alertmanager data source at
 `<proxy>/alertmanager` with `implementation: prometheus`, which asks for exactly the
 `/api/v2/*` endpoints above; the `mimir` implementation additionally requests the
 configuration API at `/api/v1/alerts` on the root, where it would collide with the
@@ -238,9 +245,10 @@ keep serving:
 
 Some settings are read only at startup. They include listeners, ports and certificates,
 the upstreams and their proxy settings, the JWKS sources, the service account token,
-`labelstore.config_paths`, and whether the alerting and ingest routes exist. A reload
-that changes one of them logs which ones need a restart. Everything else (writers,
-static keys, edges, audiences, groups, log level…) applies immediately.
+`labelstore.config_paths`, and whether the alerting, ingest and management routes exist.
+A reload that changes one of them logs which ones need a restart. Everything else
+(writers, managers, static keys, edges, audiences, groups, log level…) applies
+immediately.
 
 ### OTLP write gateway
 
@@ -420,6 +428,88 @@ traffic, not for access decisions.
 
 The listener's HTTP metrics carry the `ingest_` prefix.
 
+### Rule and Alertmanager configuration management
+
+An optional, separate TLS listener accepts writes to the configuration APIs that the
+read path keeps read-only, so rule groups and the Alertmanager configuration can be
+managed as code without exposing those APIs unauthenticated. It is off unless
+`management.enabled` is set, and it serves only:
+
+| Route | Methods | Upstream |
+|-------|---------|----------|
+| `/prometheus/config/v1/rules` | `GET` | `mimir_ruler` |
+| `/prometheus/config/v1/rules/{namespace}` | `GET`, `POST`, `DELETE` | `mimir_ruler` |
+| `/prometheus/config/v1/rules/{namespace}/{group}` | `GET`, `DELETE` | `mimir_ruler` |
+| `/loki/api/v1/rules`, `…/{namespace}`, `…/{namespace}/{group}` | as above | `loki_ruler` |
+| `/api/v1/alerts` | `GET`, `POST`, `DELETE` | `alertmanager` |
+| `/healthz` | `GET` | none; unauthenticated probe |
+
+Each API is routed only when its upstream has a URL. The paths are the upstreams' own, so
+tools that speak these APIs work unchanged against the listener: `mimirtool rules` and
+`mimirtool alertmanager` (with `--address` pointing at it), `lokitool rules`, `cortextool`.
+`/api/v1/alerts` is the Alertmanager configuration API here; nothing else on this listener
+claims the path, unlike the read listener, where it is the ruler's alert list.
+
+How a request is handled:
+
+1. **Identity.** A management static key, or a JWT validated as on the read path (JWKS,
+   `issuer`, `audiences`). Client certificates, the trusted CN header and read static
+   keys are not identities on this listener.
+2. **Manager resolution.** `managers` maps a group from the token's groups claim to a
+   *manager id*, and `static_keys` maps a key's SHA-256 to one. Exactly one distinct id
+   must match. The admin group does not imply management: every manager is listed.
+3. **Forwarding.** The request goes to the API's upstream with its method, path and body
+   unchanged (capped at `max_body_bytes`). The caller's credentials are removed, and the
+   upstream's `headers` are set, overwriting the caller's: for a multi-tenant backend, set
+   its tenant header there to pin the tenant managers may change. The upstream's status
+   and body come back as-is.
+4. **Audit.** Every change (`POST`, `DELETE`) is logged at info level with the manager,
+   the user when there is one, whether a static key was used, the method, the path and
+   the upstream's status. Reads are logged at debug level.
+
+```yaml
+management:
+  enabled: true
+  port: 8445
+  server_cert: /etc/secrets/management/tls.crt
+  server_key: /etc/secrets/management/tls.key
+  max_body_bytes: 5242880             # default
+  managers:
+    rules-admins: platform
+  static_keys:                        # SHA-256 of the key, never the key
+    "<sha256-hex>": ci
+  mimir_ruler:
+    url: http://mimir-ruler.monitoring.svc:8080
+    headers:
+      X-Scope-OrgID: anonymous        # pins the tenant
+  loki_ruler:
+    url: http://loki-backend.monitoring.svc:3100
+  alertmanager:
+    url: http://mimir-alertmanager.monitoring.svc:8080
+```
+
+A CI job then needs only the listener's address and a key or token:
+
+```bash
+export MIMIR_ADDRESS=https://rules.example.com
+export MIMIR_AUTH_TOKEN="$RULES_KEY"        # sent as Authorization: Bearer
+mimirtool rules sync rules/*.yaml
+mimirtool alertmanager load alertmanager.yaml
+```
+
+**Deployment layouts.** As for ingest, the listener can be co-located with the read path
+or, recommended, run as its own release with `management.only: true` and its own
+`nameOverride`. A management-only release has no read routes, read listeners, label store
+or read RBAC.
+
+Metrics on the metrics port:
+- `lgtm_lbac_proxy_management_requests_total{manager,target,method,code}`, where target is
+  `mimir-rules`, `loki-rules` or `alertmanager-config`
+- `lgtm_lbac_proxy_management_rejected_total{target,reason}`, with the same reasons as
+  ingest
+
+The listener's HTTP metrics carry the `management_` prefix.
+
 ### Static keys (optional)
 
 Some callers cannot obtain an expiring token:
@@ -428,16 +518,16 @@ Some callers cannot obtain an expiring token:
   signed-in user
 - scripts on hosts without an identity-provider client
 
-For these, both paths accept optional **static keys**. They are off unless configured,
+For these, every path accepts optional **static keys**. They are off unless configured,
 and JWTs keep working alongside them.
 
-| | Read path: `auth.static_keys` | Write path: `ingest.static_keys` |
-|---|---|---|
-| Maps | SHA-256 of the key → **identity** | SHA-256 of the key → **writer id** |
-| Scope | That identity's `labels.yaml` entry, enforced like any user | Pushes as that writer only |
-| Limits | No groups, so never admin; a `#cluster-wide` entry is refused | Cannot read |
+| | Read path: `auth.static_keys` | Write path: `ingest.static_keys` | Management: `management.static_keys` |
+|---|---|---|---|
+| Maps | SHA-256 of the key → **identity** | SHA-256 of the key → **writer id** | SHA-256 of the key → **manager id** |
+| Scope | That identity's `labels.yaml` entry, enforced like any user | Pushes as that writer only | Changes rules and Alertmanager configuration as that manager |
+| Limits | No groups, so never admin; a `#cluster-wide` entry is refused | Cannot read | Cannot read or push |
 
-The maps are separate: a write key never reads and a read key never writes.
+The maps are separate: a key works only on the path it is configured for.
 
 ```yaml
 auth:
@@ -446,6 +536,9 @@ auth:
 ingest:
   static_keys:
     "<sha256-hex>": app-b
+management:
+  static_keys:
+    "<sha256-hex>": ci
 ```
 
 Generate a key, and configure **only its hash**:
