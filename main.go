@@ -33,10 +33,12 @@ type App struct {
 	tempoProxy          *httputil.ReverseProxy
 	alertmanagerProxy   *httputil.ReverseProxy
 	ingestProxies       map[string]*httputil.ReverseProxy // by OTLP signal
+	managementProxies   map[string]*httputil.ReverseProxy // by management target
 	rootCAs             *x509.CertPool                    // trust pool built by WithTLSConfig
 	i                   *mux.Router
 	e                   *mux.Router
 	w                   *mux.Router // write (ingest) router, served only on the ingest listener
+	m                   *mux.Router // management router, served only on the management listener
 	healthy             bool
 
 	// cfg is the live configuration; read it with Cfg(). A reload publishes a new,
@@ -70,6 +72,7 @@ func main() {
 		WithHealthz().
 		WithRoutes().
 		WithIngest().
+		WithManagement().
 		StartServer()
 
 	log.Info().Any("config", app.Cfg())
@@ -88,8 +91,9 @@ func main() {
 //     web.proxy_port.
 //
 // Independently of the above, ingest.enabled adds a TLS listener on ingest.port that
-// serves only the write router; with ingest.only, that and the metrics listener are the
-// only ones started.
+// serves only the write router, and management.enabled a TLS listener on
+// management.port that serves only the management router. With ingest.only or
+// management.only, those and the metrics listener are the only ones started.
 func (a *App) StartServer() {
 	go func() {
 		if err := http.ListenAndServe(fmt.Sprintf("%s:%d", a.Cfg().Web.Host, a.Cfg().Web.MetricsPort), a.i); err != nil {
@@ -101,8 +105,12 @@ func (a *App) StartServer() {
 		ingestMdlw := ingestHTTPMetrics(prometheus.DefaultRegisterer)
 		go a.serveIngest(fmt.Sprintf("%s:%d", a.Cfg().Web.Host, a.Cfg().Ingest.Port), std.Handler("/", ingestMdlw, a.w))
 	}
-	if a.ingestOnly() {
-		log.Info().Msg("Ingest-only: read listeners not started")
+	if a.Cfg().Management.Enabled && a.m != nil {
+		managementMdlw := managementHTTPMetrics(prometheus.DefaultRegisterer)
+		go a.serveManagement(fmt.Sprintf("%s:%d", a.Cfg().Web.Host, a.Cfg().Management.Port), std.Handler("/", managementMdlw, a.m))
+	}
+	if a.readPathDisabled() {
+		log.Info().Msg("Read path disabled (ingest.only or management.only): read listeners not started")
 		return
 	}
 
@@ -202,8 +210,9 @@ func clientAuthType(s string) tls.ClientAuthType {
 func (a *App) WithProxies() *App {
 	log.Info().Msg("Initializing reverse proxies")
 
-	if a.ingestOnly() {
+	if a.readPathDisabled() {
 		a.withIngestProxies()
+		a.withManagementProxies()
 		return a
 	}
 
@@ -256,6 +265,7 @@ func (a *App) WithProxies() *App {
 	}
 
 	a.withIngestProxies()
+	a.withManagementProxies()
 
 	return a
 }

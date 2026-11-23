@@ -63,8 +63,8 @@ func (a *App) WithPrometheusHealth() *App {
 // WithRoutes initializes a new router, sets up logging middleware, and assigns
 // the router to the App's router field, returning the updated App.
 func (a *App) WithRoutes() *App {
-	if a.ingestOnly() {
-		log.Info().Msg("Ingest-only: no read routes")
+	if a.readPathDisabled() {
+		log.Info().Msg("Read path disabled: no read routes")
 		return a
 	}
 	e := mux.NewRouter()

@@ -7,7 +7,7 @@ metadata:
     {{- include "lgtm-lbac-proxy.labels" . | nindent 4 }}
 spec:
   ports:
-    {{- if not (include "lgtm-lbac-proxy.ingestOnly" .) }}
+    {{- if not (include "lgtm-lbac-proxy.readPathDisabled" .) }}
     - port: {{ .Values.service.webPort }}
       targetPort: http
       protocol: TCP
@@ -17,7 +17,7 @@ spec:
       targetPort: metrics
       protocol: TCP
       name: {{ include "lgtm-lbac-proxy.name" . }}-metrics
-    {{- if not (include "lgtm-lbac-proxy.ingestOnly" .) }}
+    {{- if not (include "lgtm-lbac-proxy.readPathDisabled" .) }}
     {{- with .Values.auth }}{{- with .clientCert }}{{- if and .enabled (eq (.source | default "mtls") "mtls") .mtlsPort }}
     - port: {{ .mtlsPort }}
       targetPort: mtls
@@ -31,10 +31,16 @@ spec:
       protocol: TCP
       name: {{ include "lgtm-lbac-proxy.name" . }}-ingest
     {{- end }}
+    {{- if .Values.management.enabled }}
+    - port: {{ .Values.management.port }}
+      targetPort: management
+      protocol: TCP
+      name: {{ include "lgtm-lbac-proxy.name" . }}-management
+    {{- end }}
   selector:
     {{- include "lgtm-lbac-proxy.selectorLabels" . | nindent 4 }}
   type: {{ .Values.service.type | default "ClusterIP" }}
-{{- with .Values.auth }}{{- with .clientCert }}{{- if and .enabled (eq (.source | default "mtls") "mtls") .mtlsPort $.Values.service.mtlsLoadBalancer.enabled (not (include "lgtm-lbac-proxy.ingestOnly" $)) }}
+{{- with .Values.auth }}{{- with .clientCert }}{{- if and .enabled (eq (.source | default "mtls") "mtls") .mtlsPort $.Values.service.mtlsLoadBalancer.enabled (not (include "lgtm-lbac-proxy.readPathDisabled" $)) }}
 ---
 # Dedicated LoadBalancer exposing ONLY the mTLS port; reuses the chart's pod selector
 # and the mtls targetPort, so the plain HTTP and metrics ports stay internal.
@@ -92,4 +98,35 @@ spec:
       targetPort: ingest
       protocol: TCP
       name: ingest
+{{- end }}
+{{- if and .Values.management.enabled .Values.management.loadBalancer.enabled }}
+---
+# Dedicated LoadBalancer exposing ONLY the management port; reuses the chart's pod
+# selector and the management targetPort, so the read, ingest and metrics ports stay off it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "lgtm-lbac-proxy.name" . }}-management
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lgtm-lbac-proxy.labels" . | nindent 4 }}
+  {{- with .Values.management.loadBalancer.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: LoadBalancer
+  {{- with .Values.management.loadBalancer.loadBalancerIP }}
+  loadBalancerIP: {{ . }}
+  {{- end }}
+  {{- with .Values.management.loadBalancer.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ . }}
+  {{- end }}
+  selector:
+    {{- include "lgtm-lbac-proxy.selectorLabels" . | nindent 4 }}
+  ports:
+    - port: {{ .Values.management.loadBalancer.port | default 443 }}
+      targetPort: management
+      protocol: TCP
+      name: management
 {{- end }}

@@ -52,8 +52,8 @@ type Labelstore interface {
 // It assigns the connected LabelStore to the App instance and returns it.
 // If an error occurs during the connection, it logs a fatal error.
 func (a *App) WithLabelStore() *App {
-	if a.ingestOnly() {
-		log.Info().Msg("Ingest-only: no label store")
+	if a.readPathDisabled() {
+		log.Info().Msg("Read path disabled: no label store")
 		// No labels.yaml is ever reloaded, so report the "none has happened yet" value
 		// rather than the gauge's zero, which reads as a rejected reload.
 		labelsLastReloadSuccessful.Set(1)

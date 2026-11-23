@@ -141,6 +141,64 @@ ingest:
     externalTrafficPolicy: ""   # e.g. Local, to keep client source IPs
     annotations: {}
 
+# Rule and Alertmanager configuration management listener (optional). A dedicated TLS
+# listener that accepts writes to the Mimir/Cortex ruler configuration API
+# (/prometheus/config/v1/rules), the Loki ruler configuration API (/loki/api/v1/rules)
+# and the Mimir/Cortex Alertmanager configuration API (/api/v1/alerts), so rules and
+# contact points can be managed as code (mimirtool, lokitool) without exposing those
+# APIs unauthenticated. It serves only those APIs and GET /healthz — never a query, push
+# or silence route.
+#
+# Identity is a management static key or a JWT. managers maps a group (from the groups
+# claim) to the manager id every change is attributed to in the audit log and metrics;
+# the admin group does not imply management, and read static keys grant nothing here.
+# Changes (POST/DELETE) are logged at info level with the manager, method and path.
+management:
+  enabled: false
+  # Run this release as a management listener alone: no read routes, read listeners,
+  # label store or read RBAC. Recommended: install a second release of this chart for it
+  # (with its own nameOverride), so the pods that can change rules hold no read access.
+  only: false
+  port: 8445
+  # Upstream per API; the request path is appended to the URL's base path. Empty = not
+  # routed (404). headers are set on every forwarded request, overwriting the client's:
+  # for a multi-tenant backend, pin the tenant here (e.g. X-Scope-OrgID).
+  mimirRuler:
+    url: ""                     # e.g. http://mimir-ruler.example.svc:8080
+    headers: {}
+  lokiRuler:
+    url: ""                     # e.g. http://loki-backend.example.svc:3100
+    headers: {}
+  alertmanager:
+    url: ""                     # e.g. http://mimir-alertmanager.example.svc:8080
+    headers: {}
+  managers: {}                  # e.g. { rules-admins: platform }
+  # Static management keys (off when empty): SHA-256 hex of a long-lived key -> manager
+  # id, for CI without an identity provider client. Separate from auth.staticKeys and
+  # ingest.staticKeys. Configure HASHES only (see auth.staticKeys).
+  staticKeys: {}                # e.g. { "<sha256-hex>": ci }
+  maxBodyBytes: 5242880         # cap on a rule group or Alertmanager configuration upload
+  # Secret (tls.crt/tls.key) with the listener's server cert, mounted at
+  # /etc/secrets/management/.
+  serverSecretName: ""
+  # Optionally have the chart create a cert-manager Certificate for it (secretName =
+  # serverSecretName). issuerRef is passed through verbatim.
+  serverCertificate:
+    enabled: false
+    dnsNames: []                # e.g. ["rules.example.com"]
+    duration: ""
+    issuerRef:
+      name: ""
+      kind: ClusterIssuer
+      group: cert-manager.io
+  # Optional LoadBalancer Service exposing ONLY the management port.
+  loadBalancer:
+    enabled: false
+    port: 443
+    loadBalancerIP: ""
+    externalTrafficPolicy: ""
+    annotations: {}
+
 alert:
   enabled: false # enable alerting
   tokenHeader: X-LGTM-Alert # header to use for the token

@@ -184,6 +184,42 @@ data:
       {{- end }}{{- end }}
       {{- end }}
     {{- end }}{{- end }}
+    {{- with .Values.management }}{{- if .enabled }}
+
+    management:
+      enabled: true
+      {{- if .only }}
+      only: true
+      {{- end }}
+      port: {{ .port }}
+      server_cert: /etc/secrets/management/tls.crt
+      server_key: /etc/secrets/management/tls.key
+      max_body_bytes: {{ .maxBodyBytes | int64 }}
+      {{- with .managers }}
+      managers:
+        {{- range $group, $id := . }}
+        {{ $group | quote }}: {{ $id | quote }}
+        {{- end }}
+      {{- end }}
+      {{- with .staticKeys }}
+      static_keys:
+        {{- range $hash, $manager := . }}
+        {{ $hash | quote }}: {{ $manager | quote }}
+        {{- end }}
+      {{- end }}
+      {{- range $api := list "mimirRuler" "lokiRuler" "alertmanager" }}
+      {{- with (index $.Values.management $api) }}{{- if .url }}
+      {{ $api | snakecase }}:
+        url: {{ .url | quote }}
+        {{- with .headers }}
+        headers:
+          {{- range $name, $value := . }}
+          {{ $name | quote }}: {{ $value | quote }}
+          {{- end }}
+        {{- end }}
+      {{- end }}{{- end }}
+      {{- end }}
+    {{- end }}{{- end }}
 
     labelstore:
       config_paths:
@@ -191,7 +227,7 @@ data:
         - {{ . }}
         {{- end }}
 ---
-{{- if and .Values.labels (not (include "lgtm-lbac-proxy.ingestOnly" .)) }}
+{{- if and .Values.labels (not (include "lgtm-lbac-proxy.readPathDisabled" .)) }}
 apiVersion: v1
 kind: ConfigMap
 metadata:

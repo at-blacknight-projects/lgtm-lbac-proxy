@@ -6,8 +6,8 @@ metadata:
   namespace: {{ .Release.Namespace }}
 ---
 {{- /* The read proxy authenticates to its upstreams with this service account; an
-       ingest-only release never does, so it gets no read access. */}}
-{{- if not (include "lgtm-lbac-proxy.ingestOnly" .) }}
+       ingest-only or management-only release never does, so it gets no read access. */}}
+{{- if not (include "lgtm-lbac-proxy.readPathDisabled" .) }}
 kind: ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:

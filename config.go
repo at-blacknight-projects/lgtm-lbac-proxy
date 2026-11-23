@@ -270,6 +270,51 @@ type IngestSignalConfig struct {
 	Proxy *ProxyConfig `mapstructure:"proxy"` // Per-upstream proxy configuration override
 }
 
+// ManagementConfig is the rule and Alertmanager configuration listener: a dedicated TLS
+// listener that accepts writes to the Mimir/Cortex and Loki ruler configuration APIs and
+// the Mimir/Cortex Alertmanager configuration API, so rules and contact points can be
+// managed as code without exposing those APIs unauthenticated.
+//
+// The listener serves only those APIs and a health probe — never the query, push or
+// read-only alerting routes. Identity on it is a management static key or a JWT:
+// client-certificate and trusted-header identity are not consulted, read static keys
+// grant nothing, and the admin group does not imply management. Managers maps a group
+// (as carried in the configured groups claim) to the manager id requests are attributed
+// to in the audit log and metrics.
+//
+// Changes to Enabled, Only, Port, the server certificate and the upstreams take effect
+// on restart; managers and static keys are read per request and follow config reloads.
+type ManagementConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+	// Only runs the process as a management listener alone: no label store is loaded,
+	// no read upstreams or routes are set up, and the read listeners are not served.
+	Only         bool              `mapstructure:"only"`
+	Port         int               `mapstructure:"port"`
+	ServerCert   string            `mapstructure:"server_cert"`
+	ServerKey    string            `mapstructure:"server_key"`
+	Managers     map[string]string `mapstructure:"managers"`       // group -> manager id
+	StaticKeys   map[string]string `mapstructure:"static_keys"`    // SHA-256 hex of a long-lived key -> manager id; for CI without an identity provider client
+	MaxBodyBytes int64             `mapstructure:"max_body_bytes"` // cap on a rule group or Alertmanager configuration upload
+
+	// Per-API upstreams. An API with no URL is not routed. The request path is appended
+	// to the URL's base path, so each URL is the component (or gateway) root that serves
+	// the API: /prometheus/config/v1/rules for the Mimir ruler, /loki/api/v1/rules for
+	// the Loki ruler, /api/v1/alerts for the Mimir Alertmanager.
+	MimirRuler   ManagementUpstream `mapstructure:"mimir_ruler"`
+	LokiRuler    ManagementUpstream `mapstructure:"loki_ruler"`
+	Alertmanager ManagementUpstream `mapstructure:"alertmanager"`
+}
+
+// ManagementUpstream is the upstream for one configuration API.
+type ManagementUpstream struct {
+	URL string `mapstructure:"url"`
+	// Headers are set on every forwarded request, overwriting any value the client sent.
+	// For a multi-tenant backend, set its tenant header here (for example X-Scope-OrgID)
+	// to pin the tenant managers can change.
+	Headers map[string]string `mapstructure:"headers"`
+	Proxy   *ProxyConfig      `mapstructure:"proxy"` // Per-upstream proxy configuration override
+}
+
 type Config struct {
 	Log          LogConfig          `mapstructure:"log"`
 	Auth         AuthConfig         `mapstructure:"auth"` // Authentication configuration (preferred)
@@ -283,7 +328,8 @@ type Config struct {
 	Loki         LokiConfig         `mapstructure:"loki"`
 	Tempo        TempoConfig        `mapstructure:"tempo"`
 	Alertmanager AlertmanagerConfig `mapstructure:"alertmanager"`
-	Ingest       IngestConfig       `mapstructure:"ingest"` // OTLP write gateway
+	Ingest       IngestConfig       `mapstructure:"ingest"`     // OTLP write gateway
+	Management   ManagementConfig   `mapstructure:"management"` // Rule + Alertmanager configuration listener
 	LabelStore   LabelStoreConfig   `mapstructure:"labelstore"`
 }
 
@@ -358,6 +404,7 @@ func newConfigViper() *viper.Viper {
 	v.SetDefault("alertmanager::path_prefix", "/alertmanager")
 	v.SetDefault("ingest::max_body_bytes", defaultIngestMaxBodyBytes)
 	v.SetDefault("ingest::writer_header", defaultIngestWriterHeader)
+	v.SetDefault("management::max_body_bytes", defaultManagementMaxBodyBytes)
 	return v
 }
 
@@ -391,6 +438,9 @@ func loadConfig(v *viper.Viper) (*Config, error) {
 	validateTempoConfig(cfg)
 	if err := validateIngestConfig(cfg); err != nil {
 		return nil, fmt.Errorf("invalid ingest configuration: %w", err)
+	}
+	if err := validateManagementConfig(cfg); err != nil {
+		return nil, fmt.Errorf("invalid management configuration: %w", err)
 	}
 	if err := validateAuthStaticKeys(cfg); err != nil {
 		return nil, fmt.Errorf("invalid static key configuration: %w", err)
@@ -451,7 +501,8 @@ func (a *App) reloadConfig() {
 // restartOnlyChanges names the settings that differ between old and next but are only
 // read at startup: listeners and their certificates, the upstreams (whose proxies,
 // headers and actor headers are built once), the JWKS sources, the service account
-// token, the label store location, and whether the alerting and ingest routes exist.
+// token, the label store location, and whether the alerting, ingest and management
+// routes exist.
 // A reload publishes them, but nothing reads them again until a restart.
 func restartOnlyChanges(old, next *Config) []string {
 	if old == nil {
@@ -464,6 +515,10 @@ func restartOnlyChanges(old, next *Config) []string {
 	ingestListener := func(c *Config) any {
 		in := c.Ingest
 		return []any{in.Enabled, in.Only, in.Port, in.ServerCert, in.ServerKey, in.Metrics, in.Logs, in.Traces}
+	}
+	managementListener := func(c *Config) any {
+		m := c.Management
+		return []any{m.Enabled, m.Only, m.Port, m.ServerCert, m.ServerKey, m.MimirRuler, m.LokiRuler, m.Alertmanager}
 	}
 	settings := []struct {
 		name      string
@@ -486,6 +541,7 @@ func restartOnlyChanges(old, next *Config) []string {
 		{"proxy", old.Proxy, next.Proxy},
 		{"alerting.enabled", old.Alerting.Enabled, next.Alerting.Enabled},
 		{"ingest listener and upstreams", ingestListener(old), ingestListener(next)},
+		{"management listener and upstreams", managementListener(old), managementListener(next)},
 		{"labelstore.config_paths", old.LabelStore.ConfigPaths, next.LabelStore.ConfigPaths},
 	}
 	var changed []string
