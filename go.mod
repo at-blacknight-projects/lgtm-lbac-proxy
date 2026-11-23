@@ -2,7 +2,7 @@ module github.com/at-blacknight-projects/lgtm-lbac-proxy
 
 go 1.26.5
 
-toolchain go1.26.10
+toolchain go1.26.11
 
 require (
 	github.com/MicahParks/jwkset v0.11.0
